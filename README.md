@@ -1,6 +1,9 @@
 # Personality Excretion（PEX）
 # Personality Excretion (PEX)
 
+> **官方唯一发布渠道**：本仓库（Nice8923/BC-PEX）。请使用下方安装链接；其他来源的副本不受支持，且不会自动更新。
+> **Official distribution** is this repository only (Nice8923/BC-PEX). Install via the link below; copies from other sources are unsupported and will not auto-update.
+
 Bondage Club（R130+）的 Tampermonkey 插件：喝下带关键词的人格药水后，触发 **眩晕 → 等待 → 排出 → 失神 → 凝胶 → 喂回恢复** 的完整玩法流程。
 A Tampermonkey plugin for Bondage Club (R130+): drink a persona potion carrying the trigger keyword and go through the full flow — **Dizzy → Wait → Excrete → Blank → Gel → Feed-back & Recover**.
 
