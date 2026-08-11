@@ -142,7 +142,7 @@ const EXT = {
         panel.id = PANEL_ID;
         panel.innerHTML = `
             <div class="pex-s-head">
-                <div class="pex-s-title">BC-PEX 人格排泄 · 设置</div>
+                <div class="pex-s-title">人格排泄 · 设置</div>
                 <button type="button" class="pex-act" data-pex-close="1">✕</button>
             </div>
             <div class="pex-s-body">
@@ -611,7 +611,7 @@ const EXT = {
             <div class="pex-about-line">/pex help 帮助　/pex howto 玩法说明　/pex status 当前状态</div>
             <div class="pex-about-line">/pex show 控制台面板　/pex settings 打开设置　/pex reset 强制恢复</div>
             <div class="pex-about-head">版本</div>
-            <div class="pex-about-line">BC-PEX v${MOD_VER}</div>
+                <div class="pex-about-line">Personality Excretion v${MOD_VER}</div>
             <div class="pex-about-head">调试</div>
             <div class="pex-about-line">按 F12 打开浏览器控制台，把 ⚗️[PEX] 开头的报错信息发给作者。</div>
             <div class="pex-about-head">数据</div>

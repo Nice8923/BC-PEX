@@ -91,7 +91,6 @@ export async function initialize() {
                 name: 'Personality Excretion (PEX)',
                 fullName: 'Personality Excretion',
                 version: MOD_VER,
-                repository: 'https://github.com/Nice8923/BC-PEX',
             }));
         } catch (e) {
             pexWarn('registerMod 失败，进入兼容模式:', e.message);
