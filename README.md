@@ -8,41 +8,41 @@ A Tampermonkey plugin for Bondage Club (R130+): drink a persona potion carrying 
 ## Gameplay Flow
 
 1. **触发**：物品的制作名 / 制作描述 / 雕刻描述含关键词（如"人格药水"），喝下或注射后进入眩晕。
-   **Trigger**: an item whose craft name / craft description / engraved description contains a keyword (e.g. "人格药水" / "persona potion") — drinking or injecting it starts the dizzy phase.
+ **Trigger**: an item whose craft name / craft description / engraved description contains a keyword (e.g. "人格药水" / "persona potion") — drinking or injecting it starts the dizzy phase.
 2. **等待**：臀部槽位被物品遮挡时进入等待期（默认 50 秒，可在设置里调），期间播放等待音效与表情（与音效分段同步）。
-   **Wait**: while the butt slot is blocked by an item you enter the waiting phase (default 50 s, adjustable). Waiting sounds and expressions play in sync with the sound segments.
+ **Wait**: while the butt slot is blocked by an item you enter the waiting phase (default 50 s, adjustable). Waiting sounds and expressions play in sync with the sound segments.
 3. **排出**：拿掉遮挡物立刻排出——排出动画 + 排出音效（时长对齐）。
-   **Excrete**: removing the blocking item triggers excretion immediately — animation + excretion sound (durations aligned).
+ **Excrete**: removing the blocking item triggers excretion immediately — animation + excretion sound (durations aligned).
 4. **失神 / 凝胶**：
-   **Blank / Gel**:
-   - **人格凝胶**：失神者失去意识（黑白画面 + 禁言 + 失神表情），凝胶出现在所有人脚下；任何人可捡起，喂回主人后恢复意识。
-     **Persona gel**: the character loses consciousness (black & white screen, speech blocked, blank expression) and the gel appears at their feet for everyone; anyone can pick it up and feed it back to the owner to restore them.
-   - **普通凝胶**：无失神表现，短暂表情变化后结束。
-     **Normal gel**: no blank state, just a brief expression change.
+ **Blank / Gel**:
+ - **人格凝胶**：失神者失去意识（黑白画面 + 禁言 + 失神表情），凝胶出现在所有人脚下；任何人可捡起，喂回主人后恢复意识。
+ **Persona gel**: the character loses consciousness (black & white screen, speech blocked, blank expression) and the gel appears at their feet for everyone; anyone can pick it up and feed it back to the owner to restore them.
+ - **普通凝胶**：无失神表现，短暂表情变化后结束。
+ **Normal gel**: no blank state, just a brief expression change.
 5. **恢复**：凝胶被喂回 / 到期自动回归 / 强制恢复。
-   **Recover**: by feeding the gel back, by auto-revert on expiry, or by force reset.
+ **Recover**: by feeding the gel back, by auto-revert on expiry, or by force reset.
 
 ## 功能
 ## Features
 
 - **关键词触发**：人格与普通凝胶各 4 个默认关键词，设置页可自定义。
-  **Keyword trigger**: 4 default keywords each for persona and normal gels, fully customizable in settings.
+ **Keyword trigger**: 4 default keywords each for persona and normal gels, fully customizable in settings.
 - **音效系统**：等待（最多 5 段，随等待时长自动分段）、排出、放回三类音效；本地播放走 Web Audio（CDN 加载 + 自动回退），音量随特效强度；三类音效可分别开关；默认关闭"听到其他玩家音效"，可打开。
-  **Sound system**: three sound types — waiting (up to 5 segments, auto-split by wait duration), excretion and feed-back. Local playback uses Web Audio (CDN with automatic raw fallback); volume scales with effect level; each type can be toggled; "hear other players' sounds" is off by default and can be enabled.
+ **Sound system**: three sound types — waiting (up to 5 segments, auto-split by wait duration), excretion and feed-back. Local playback uses Web Audio (CDN with automatic raw fallback); volume scales with effect level; each type can be toggled; "hear other players' sounds" is off by default and can be enabled.
 - **表情系统**：等待表情池（最多 10 组，与音效分段同步）+ 排出表情 + 失神表情。
-  **Expression system**: waiting expression pool (up to 10 sets, synced with sound segments) + excretion expression + blank expression.
+ **Expression system**: waiting expression pool (up to 10 sets, synced with sound segments) + excretion expression + blank expression.
 - **特效强度**：1–5 档，实际影响眩晕/模糊/震屏/音量等效果。
-  **Effect level**: 1–5, actually affects dizziness / blur / screen shake / volume.
+ **Effect level**: 1–5, actually affects dizziness / blur / screen shake / volume.
 - **多人并发**：凝胶唯一性、按角色独立状态，多人同时排出互不干扰。
-  **Multiplayer concurrency**: unique gel ownership and per-character state — simultaneous excretion by multiple players never conflicts.
+ **Multiplayer concurrency**: unique gel ownership and per-character state — simultaneous excretion by multiple players never conflicts.
 - **设置页**：完整设置界面（触发关键词、等待时长、特效、可见性、白名单、远程编辑权限等），支持导入/导出。
-  **Settings screen**: full settings UI (keywords, wait duration, effects, timer visibility, whitelist, remote-edit permissions…), with import/export.
+ **Settings screen**: full settings UI (keywords, wait duration, effects, timer visibility, whitelist, remote-edit permissions…), with import/export.
 - **远程编辑**：资料页按钮远程编辑他人的 PEX 设置（权限可配）。
-  **Remote editing**: a profile-page button to edit another player's PEX settings remotely (permission-based).
+ **Remote editing**: a profile-page button to edit another player's PEX settings remotely (permission-based).
 - **游戏内指令**：`/pex help` `/pex howto` `/pex show` `/pex status` `/pex reset` `/pex settings`。
-  **In-game commands**: `/pex help` `/pex howto` `/pex show` `/pex status` `/pex reset` `/pex settings`.
+ **In-game commands**: `/pex help` `/pex howto` `/pex show` `/pex status` `/pex reset` `/pex settings`.
 - **断线保护**：设置三层存储（账号 ExtensionSettings + 本地备份 + OnlineSharedSettings 状态公告），页关闭时强制刷盘。
-  **Connection safety**: three-layer settings storage (account ExtensionSettings + local backup + OnlineSharedSettings state broadcast), force-flushed on page close.
+ **Connection safety**: three-layer settings storage (account ExtensionSettings + local backup + OnlineSharedSettings state broadcast), force-flushed on page close.
 
 ## 安装
 ## Installation
@@ -76,11 +76,11 @@ A Tampermonkey plugin for Bondage Club (R130+): drink a persona potion carrying 
 - 设置页可填写自定义音效 URL，或关闭某类音效。
   Custom sound URLs can be set in the settings screen, and each sound type can be turned off.
 
-## 缺的美术资源（欢迎投稿！）
-## Missing Art Assets (Contributions Welcome!)
+## 缺的美术资源
+## Missing Art Assets
 
-插件目前全部使用程序化占位绘制，以下美术资源缺失，**欢迎画师/开发者贡献**（投稿方式见 [CONTRIBUTING.md](CONTRIBUTING.md)）：
-The plugin currently uses procedural placeholders everywhere. The following art assets are missing — **contributions from artists/developers are very welcome** (see [CONTRIBUTING.md](CONTRIBUTING.md)):
+插件目前全部使用程序化占位绘制，以下美术资源缺失：
+The plugin currently uses procedural placeholders everywhere. The following art assets are missing:
 
 | # | 资源 / Asset | 现状（占位）Current (placeholder) | 用途 / Usage | 期望规格 / Spec |
 |---|------|-------------|------|---------|
