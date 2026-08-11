@@ -1,0 +1,1 @@
+# BC-PEX 图片资源目录`n`n图片素材（PNG 精灵图等）放在这里，通过 jsDelivr CDN 加载：`nhttps://cdn.jsdelivr.net/gh/Nice8923/BC-PEX@main/Images/文件名.png

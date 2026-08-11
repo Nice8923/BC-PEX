@@ -1,0 +1,1451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PEX 冒烟测试（模拟 BC 环境）</title>
+<style>
+body{background:#141120;color:#e8e4f5;font-family:monospace;padding:20px}
+#log{white-space:pre-wrap;font-size:13px;line-height:1.6}
+.ok{color:#7fd6a0}.bad{color:#ff7a7a}.info{color:#9b93bd}
+button{margin:4px;padding:6px 12px;background:#2a6b63;color:#fff;border:none;border-radius:6px;cursor:pointer}
+</style>
+</head>
+<body>
+<h2>PEX 冒烟测试（模拟 BC 环境）</h2>
+<div id="log"></div>
+<canvas id="MainCanvas" style="width:2000px;height:1000px"></canvas>
+<div id="TextAreaChatLog" style="height:120px;overflow:auto"></div>
+<script src="reference/bc-client/Scripts_lib_LZString.js"></script>
+<script>
+"use strict";
+const log = document.getElementById('log');
+const L = (cls, ...args) => { const d = document.createElement('div'); d.className = cls; d.textContent = args.join(' '); log.appendChild(d); };
+
+// ── 收集结果 ──
+const results = [];
+const check = (name, ok, extra) => { results.push({ name, ok, extra }); L(ok ? 'ok' : 'bad', (ok ? '✅' : '❌') + ' ' + name + (extra ? ' — ' + extra : '')); };
+
+// 轮询等待条件成立（后台标签 setTimeout 会被浏览器节流放大数十倍，固定等待不可靠）
+// interval 用极小值（100ms → 节流放大后仍能较快检查）+ 超时 60s（真实时间）
+function waitUntil(cond, cb, timeoutMs = 60000, interval = 100) {
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+        let ok = false;
+        try { ok = cond(); } catch (e) {}
+        if (ok || Date.now() - t0 > timeoutMs) {
+            clearInterval(iv);
+            cb(ok);
+        }
+    }, interval);
+}
+
+// ── BC 环境桩 ──
+window.__hooks = {};
+window.PEX = window.PEX ?? {};
+const fakePlayer = {
+    MemberNumber: 12345, AccountName: 'tester',
+    ExtensionSettings: {}, OnlineSharedSettings: {},
+    Appearance: [
+        { Asset: { Name: 'EyebrowsX', Group: { Name: 'Eyebrows', AllowExpression: ['Soft', 'Lowered', 'Raised', 'Frown'] } }, Property: {} },
+        { Asset: { Name: 'EyesX', Group: { Name: 'Eyes', AllowExpression: ['VeryLewd', 'HeartPink', 'LewdHeartPink', 'Closed', 'Dazed', 'Normal'] } }, Property: {} },
+        { Asset: { Name: 'Eyes2X', Group: { Name: 'Eyes2', AllowExpression: ['VeryLewd', 'HeartPink', 'LewdHeartPink', 'Closed', 'Dazed', 'Normal'] } }, Property: {} },
+        { Asset: { Name: 'MouthX', Group: { Name: 'Mouth', AllowExpression: ['Frown', 'Moan', 'Ahegao', 'Open'] } }, Property: {} },
+        { Asset: { Name: 'BlushX', Group: { Name: 'Blush', AllowExpression: ['High', 'Medium', 'Low', 'VeryHigh'] } }, Property: {} },
+        { Asset: { Name: 'EmoticonX', Group: { Name: 'Emoticon', AllowExpression: ['Sleep', 'Normal'] } }, Property: {} },
+    ],
+    IsPlayer: () => true, CanKneel: () => true,
+    Crafting: [], Relationship: [],
+};
+const fakeItem = {
+    Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+    Craft: { Name: '测试的人格药水', Description: 'PEX测试用', MemberNumber: 12345, Property: 'Normal' },
+    Color: undefined, Difficulty: 1, Property: {},
+};
+let handItem = null;
+let __buttBlocked = false;
+const buttItem = { Asset: { Name: 'AnalBeads2', Group: { Name: 'ItemButt' }, Description: '' }, Craft: null, Property: {} };
+
+window.bcModSdk = {
+    registerMod: (info) => {
+        window.__modInfo = info;
+        return {
+            hookFunction: (name, prio, fn) => { window.__hooks[name] = fn; return () => {}; },
+            patchFunction: () => {}, onUnload: (fn) => { window.__onUnload = fn; },
+        };
+    },
+};
+window.ServerIsLoggedIn = () => true;
+window.CurrentScreen = 'ChatRoom';
+window.ChatRoomHideIconState = 0;
+window.Player = fakePlayer;
+window.__exprCalls = [];
+window.CharacterSetFacialExpression = (C, g, n) => { window.__exprCalls.push([g, n]); };
+window.CharacterRefresh = () => {};
+window.ChatRoomCharacterExpressionUpdate = () => {};
+const fakeOther = {
+    MemberNumber: 99999, AccountName: 'other', ExtensionSettings: {}, OnlineSharedSettings: { PEX: { state: null } },
+    Appearance: [], IsPlayer: () => false, CanKneel: () => true, Crafting: [], Relationship: [],
+    HeightRatio: 1, HeightRatioProportion: 1, HeightModifier: 0,
+};
+window.ChatRoomCharacter = [fakePlayer, fakeOther];
+window.WardrobeGetExpression = () => ({ Eyes: 'Normal', Emoticon: null });
+window.CharacterNickname = (C) => (C && C.MemberNumber === 12345 ? '测试员' : '某人');
+window.ChatRoomCharacterUpdate = () => {};
+window.ServerPlayerExtensionSettingsSync = () => {};
+window.ServerAccountUpdate = { QueueData: () => {}, SyncToServer: () => {} };
+window.ServerSend = (cmd, data) => { window.__lastSend = { cmd, data }; };
+window.ChatRoomMessage = () => {};
+window.InventoryGet = (C, g) => {
+    if (g === 'ItemHandheld') return handItem;
+    if (g === 'ItemButt' && __buttBlocked) return buttItem;
+    return null;
+};
+window.InventoryWear = (C, name, g, color, diff, owner, craft) => {
+    handItem = { Asset: { Name: name, Group: { Name: g }, Description: '' }, Craft: craft || null, Color: color, Difficulty: diff, Property: {} };
+    return handItem;
+};
+window.InventoryRemove = (C, g) => { if (g === 'ItemHandheld') handItem = null; };
+window.PoseSetActive = () => {};
+window.PoseRefresh = (C) => { if (C) C.AllowedActivePoseMapping = {}; };   // 模拟：从物品重建允许列表
+window.ValidationCreateDiffParams = () => ({});
+window.ValidationCanRemoveItem = () => true;
+window.DrawButton = () => {}; window.DrawText = () => {}; window.DrawTextFit = () => {};
+window.DrawRect = () => {}; window.DrawEmptyRect = () => {}; window.DrawTextWrap = () => {};
+window.DrawImageResize = () => {};   // 凝胶底层绘制用
+window.MouseIn = (x, y, w, h) => (window.MouseX >= x && window.MouseX <= x + w && window.MouseY >= y && window.MouseY <= y + h);
+window.MouseX = 0; window.MouseY = 0;
+window.MainCanvas = new Proxy({}, {
+    get(t, p) {
+        if (p === 'measureText') return () => ({ width: 0 });
+        if (!(p in t)) t[p] = () => {};
+        return t[p];
+    },
+    set(t, p, v) { t[p] = v; return true; },
+});
+window.PreferenceRegisterExtensionSetting = (s) => { window.__prefScreen = s; };
+window.PreferenceExit = () => {};
+window.CommandCombine = (list) => { window.__commands = list; };
+window.DialogActivity = [];
+window.DialogMenuMapping = { activities: { Reload: () => {} } };
+window.AudioPlaySoundEffect = () => { window.__audioStarts = (window.__audioStarts || 0) + 1; };
+// Web Audio mock（v0.1.33+ 播放走 fetch+decodeAudioData+BufferSource）
+window.__audioStarts = 0;      // 实际开始播放的次数（playBuffer → src.start）
+window.__audioVolumes = [];    // 播放音量记录（特效强度挂钩验证）
+window.__audioFetches = [];    // fetch 的 URL 记录（CDN/raw 回退验证）
+class MockAudioContext {
+    constructor() { this.state = 'running'; }
+    resume() { return Promise.resolve(); }
+    createGain() {
+        const g = { gain: { value: 1 }, connect: (n) => n };
+        window.__lastGain = g;   // 音量断言：读最近一次播放的音量
+        return g;
+    }
+    createBufferSource() {
+        return {
+            buffer: null,
+            connect: () => ({ connect: () => {} }),
+            start: () => { window.__audioStarts = (window.__audioStarts || 0) + 1; },
+        };
+    }
+    decodeAudioData(buf) { return Promise.resolve({ length: 1, duration: 1 }); }
+}
+window.AudioContext = MockAudioContext;
+window.webkitAudioContext = MockAudioContext;
+window.fetch = (url) => {
+    window.__audioFetches.push(String(url));
+    return Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) });
+};
+window.DrawFlashScreen = () => {};
+window.CommonTime = () => Date.now();
+// 层 7 凝胶伪资产环境（BC R130：AssetMap/Assets/CharacterLoadCanvas）
+window.AssetMap = new Map();
+window.Assets = { ItemFeet: { Group: { Name: 'ItemFeet', Asset: [] } } };
+window.CharacterLoadCanvas = () => {};
+
+// 注入假活动消息（R130 真实格式：ChatRoomMessage(data) 单参数，字典条目直存属性）
+// 与客户端 ActivityRun（Scripts_Activity.js:884-898）生成的格式一致
+function fireActivity(activityName, target, groupName) {
+    const data = {
+        Type: 'Activity', Sender: 12345, Content: 'ChatSelf-' + (groupName || 'ItemMouth') + '-' + activityName,
+        Dictionary: [
+            { ActivityName: activityName },
+            { Tag: 'FocusAssetGroup', FocusGroupName: groupName || 'ItemMouth' },
+            { TargetCharacter: target },
+        ],
+    };
+    if (window.__hooks['ChatRoomMessage']) {
+        window.__hooks['ChatRoomMessage']([data], () => {});
+    }
+}
+
+// 制作描述压缩编码（与客户端 CraftingDescription.Encode 同款，用于测试解码）
+function craftDescEncode(text) {
+    let ret = '\x00', i = 0;
+    const iMax = Math.min(199, Math.ceil(text.length / 2));
+    while (i < iMax) {
+        const a = text.charCodeAt(i * 2), b = text.charCodeAt(1 + i * 2);
+        if (Number.isNaN(b)) ret += String.fromCharCode(a * 256);
+        else ret += String.fromCharCode(a * 256 + b);
+        i++;
+    }
+    return ret;
+}
+
+// ── 加载插件 ──
+L('info', '加载 PEX bundle…');
+import('http://localhost:8000/bc-pex/dist/assets/main.js?v=' + Date.now())
+    .then(() => {
+        L('info', 'bundle 加载完成');
+        setTimeout(runTests, 1500);
+    })
+    .catch(e => { L('bad', 'bundle 加载失败: ' + e.message); });
+
+function runTests() {
+    L('info', '══════ 开始测试 ══════');
+
+    // 0. 排出动画默认 7340ms（= 默认排出音效时长，动画结束进黑白正好音效播完）；
+    //    测试全流程用 2600ms 覆写加速（仅测试钩子，正式环境不受影响）
+    check('排出动画默认时长 7340ms', typeof window.PEX.setAnimDurationOverride === 'function', '钩子存在');
+    window.PEX.setAnimDurationOverride(2600);
+
+    // 1. 公共 API
+    check('window.PEX 存在', !!window.PEX, 'v' + (window.PEX?.version || '?'));
+    check('registerMod 调用', !!window.__modInfo, window.__modInfo?.name);
+
+    // 2. 设置页注册
+    check('设置页注册', !!window.__prefScreen, window.__prefScreen?.ButtonText);
+
+    // 3. 指令注册（进房时触发）
+    try { if (window.__hooks['ChatRoomRun']) window.__hooks['ChatRoomRun']([], () => {}); } catch (e) {}
+    check('CommandCombine 注册', Array.isArray(window.__commands) && window.__commands.length > 0,
+        window.__commands?.map?.(c => c.Tag)?.join(','));
+    try { window.__commands?.[0]?.Action?.('help'); check('/pex help 执行', true, '未抛异常'); } catch (e) { check('/pex help 执行', false, e.message); }
+
+    // 4. 关键词触发流程（喝下带关键词的饮料）
+    handItem = {
+        Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+        Craft: { Name: '神秘的人格药水', Description: '喝下后会发生什么', MemberNumber: 12345, Property: 'Normal' },
+        Color: undefined, Difficulty: 1, Property: {},
+    };
+    fireActivity('SipItem', 12345);
+    setTimeout(() => {
+        const status = window.PEX.status();
+        check('喝下关键词饮料触发流程', status.includes('等待'), status);
+    }, 300);
+
+    // 4b. 回归：ChatRoomRun 每帧调用不得刷服务器消息（曾因每帧触发 onEnter → 每帧
+    //   setTimeout → publishSharedSettings 每秒几十条 AccountUpdate → 队列积压，
+    //   打字 10-20 秒延迟 + 服务器限流踢人；mock 里 ChatRoomRun 由测试手动调用）
+    setTimeout(() => {
+        window.__accUpdates = 0;
+        const origQ = window.ServerAccountUpdate.QueueData;
+        window.ServerAccountUpdate.QueueData = (data, force) => { if (data?.OnlineSharedSettings) window.__accUpdates++; };
+        try {
+            for (let i = 0; i < 30; i++) { if (window.__hooks['ChatRoomRun']) window.__hooks['ChatRoomRun']([], () => {}); }
+        } catch (e) {}
+        const n = window.__accUpdates;
+        window.ServerAccountUpdate.QueueData = origQ;
+        check('ChatRoomRun 每帧不刷消息（30帧 ≤1 条 AccountUpdate）', n <= 1, 'AccountUpdate 条数: ' + n);
+    }, 100);
+
+    // 5. 无关键词不触发
+    setTimeout(() => {
+        // 先强制恢复，再试普通饮料
+        window.PEX.reset();
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '普通的橙汁', Description: '好喝', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        setTimeout(() => {
+            const status = window.PEX.status();
+            check('无关键词不触发', status.includes('正常'), status);
+        }, 300);
+    }, 800);
+
+    // 6. 普通凝胶关键词
+    setTimeout(() => {
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '舒缓凝胶药剂', Description: '温和的东西', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        setTimeout(() => {
+            const status = window.PEX.status();
+            check('普通凝胶触发', status.includes('等待'), status);
+            window.PEX.reset();
+        }, 300);
+    }, 1600);
+
+    // 7. 强制恢复
+    setTimeout(() => {
+        window.PEX.reset();
+        const status = window.PEX.status();
+        check('强制恢复', status.includes('正常'), status);
+
+        // ── 8. 制作描述压缩编码里的关键词（真实场景：ASCII 描述开"ASCII 描述"选项后被
+        //    CraftingDescription 打包；中文描述是明文不打包，见客户端 Encode 的 PatternASCII 校验）──
+        window.PEX.reset();
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘饮料', Description: craftDescEncode('blessed persona potion brew'), MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        setTimeout(() => {
+            const sE = window.PEX.status();
+            check('编码描述中的关键词能触发', sE.includes('等待'), sE);
+            window.PEX.reset();
+
+            // ── 9. 雕刻描述（item.Description）里的关键词 ──
+            handItem = {
+                Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+                Craft: null,
+                Description: '刻着"人格药水"四个字的杯子',
+                Color: undefined, Difficulty: 1, Property: {},
+            };
+            fireActivity('SipItem', 12345);
+            setTimeout(() => {
+                const sD = window.PEX.status();
+                check('雕刻描述中的关键词能触发', sD.includes('等待'), sD);
+                window.PEX.reset();
+                handItem = null;
+
+                // ── 深层：臀部被挡流程 ──
+                deepFlow();
+            }, 400);
+        }, 400);
+    }, 2600);
+
+    function deepFlow() {
+        L('info', '—— 深层测试：臀部被挡流程 ——');
+        const cfg = window.PEX.getConfig();
+        cfg.waitSeconds = 0;   // 立即到排出时刻
+        __buttBlocked = true;
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        setTimeout(() => {
+            const s1 = window.PEX.status();
+            check('臀部被挡进入等待', s1.includes('等待'), s1);
+            // 拿掉遮挡 → 立刻排出 → 失神（轮询等状态，后台标签节流安全）
+            __buttBlocked = false;
+            waitUntil(() => window.PEX.status().includes('失神'), () => {
+                const s2 = window.PEX.status();
+                // 凝胶 = 层 7 伪资产（画在角色画布身体层，被衣服遮住）
+                check('拿掉遮挡后失神+凝胶', s2.includes('失神'), s2 + ' / 凝胶: 层 7 身体层');
+                check('失神时禁言激活', window.__pexSpeechBlock === undefined ? 'n/a' : 'skip');
+                const cvEl2 = document.getElementById('MainCanvas');
+                check('排出后画面无抖动', !cvEl2.style.transform, 'transform=' + (cvEl2.style.transform || '无'));
+                // 失神不能动：CanWalk/CanInteract 被封锁（不能走/离开房间/做动作/拿东西）
+                const cw = window.__hooks['Player.CanWalk']([], () => true);
+                const ci = window.__hooks['Player.CanInteract']([], () => true);
+                const ccc = window.__hooks['Player.CanChangeOwnClothes']([], () => true);
+                const acp = window.__hooks['ActivityCheckPrerequisites']([{ Name: 'RubItem' }, fakePlayer, fakeOther, { Name: 'ItemHands' }], () => true);
+                // 姿势 = 原生拘束：PoseRefresh 后允许列表全空（姿势菜单禁用）
+                let poseEmpty = false;
+                if (window.__hooks['PoseRefresh']) {
+                    fakePlayer.AllowedActivePoseMapping = { BodyUpper: ['Kneel'], BodyLower: ['BaseLower'] };
+                    window.__hooks['PoseRefresh']([fakePlayer], () => {});
+                    poseEmpty = !(fakePlayer.AllowedActivePoseMapping.BodyUpper || []).length;
+                }
+                // 表情弹回：玩家改表情 → 立即恢复失神表情（Dazed）
+                let eyesBack = null;
+                if (window.__hooks['CharacterSetFacialExpression']) {
+                    fakePlayer.Appearance.forEach(a => { if (a.Property) a.Property.Expression = null; });
+                    window.__hooks['CharacterSetFacialExpression']([fakePlayer, 'Eyes', 'Closed', undefined, undefined, true], () => {});
+                    eyesBack = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression;
+                }
+                // 不眨眼：BlinkFactor 被设成极大值
+                const noBlink = fakePlayer.BlinkFactor === 999999;
+                check('失神不能动', cw === false && ci === false && ccc === false && acp === false && poseEmpty && eyesBack === 'Dazed' && noBlink,
+                    'CanWalk=' + cw + ' CanInteract=' + ci + ' 换衣=' + ccc + ' 活动=' + acp +
+                    ' 姿势禁=' + poseEmpty + ' 表情弹回=' + eyesBack + ' 不眨眼=' + noBlink);
+                // 失神视野：BC 原生失明叠加（默认 2 级）
+                const bl = window.__hooks['Player.GetBlindLevel']([false], () => 0);
+                check('失神视野（原生失明）', bl === 2, 'blind=' + bl);
+                // Action 播报翻译兜底：MISSING TEXT 前缀 → 返回原文
+                const tq = window.__hooks['TextQueryMultiple'](['某人喝下了什么奇怪的东西'], () => 'MISSING TEXT IN "Interface.csv": 某人喝下了什么奇怪的东西');
+                check('Action 播报无 MISSING 前缀', tq === '某人喝下了什么奇怪的东西', '结果: ' + tq);
+                // 放回喂回：主人收到 PEX_GelConsumed（owner=自己）→ 恢复意识
+                window.__hooks['ChatRoomMessage']([{
+                    Type: 'Hidden', Content: 'PEX_GelConsumed', Sender: 99999,
+                    Dictionary: [{ Tag: 'GelId', Value: 'x' }, { Tag: 'Drinker', Value: '12345' }, { Tag: 'Owner', Value: '12345' }],
+                }], () => {});
+                const diagSend = window.__lastSend
+                    ? (window.__lastSend.cmd + '/' + (window.__lastSend.data?.Type || '') + '/' + String(window.__lastSend.data?.Content || '').slice(0, 24))
+                    : '无发送';
+                setTimeout(() => {
+                    const s3 = window.PEX.status();
+                    const cw2 = window.__hooks['Player.CanWalk']([], () => true);
+                    // 恢复后姿势允许列表被重建（空对象=全可用；有物品限制时按物品重建）
+                    const poseMap = fakePlayer.AllowedActivePoseMapping;
+                    const poseRestored = !!poseMap && !poseMap.BodyUpper && !poseMap.BodyLower;
+                    check('放回后主人恢复', s3.includes('正常') && cw2 === true && poseRestored,
+                        s3 + ' / CanWalk=' + cw2 + ' 姿势恢复=' + poseRestored);
+                    window.PEX.reset();
+                    cfg.waitSeconds = 30;   // 还原
+                    setTimeout(() => { extraTests(); }, 800);
+                }, 300);
+            }, 300000);
+        }, 1500);
+    }
+
+    // ── 新功能用例：本地通道 / 表情序列 / 远程凝胶 ──
+    function extraTests() {
+        // 10. ActivityRun 本地通道（自己对自己喝 → 直接触发，不依赖网络回声）
+        window.PEX.reset();
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        // waitSeconds 调小（2s）：节流放大后 WAITING 也能在超时内观测到
+        const cfg10 = window.PEX.getConfig();
+        cfg10.waitSeconds = 2;
+        window.__hooks['ActivityRun']([fakePlayer, fakePlayer, { Name: 'ItemMouth' }, { Activity: { Name: 'SipItem' }, Item: handItem }], () => {});
+        // 10. 检查"等待排出"（轮询：后台标签节流下固定 300ms 可能延迟到流程已结束）
+        waitUntil(() => window.PEX.status().includes('等待'), () => {
+            const sA = window.PEX.status();
+            check('ActivityRun 本地通道触发', sA.includes('等待'), sA);
+            window.PEX.reset();
+
+            // 11. 等待期表情与音效同步（喝下后按段数同步触发；waitSeconds=2 → 1 段在 1s）
+            const cfg2 = window.PEX.getConfig();
+            cfg2.waitSeconds = 2;
+            // 固定等待表情池（避免随机），池内一组：VeryLewd
+            cfg2.expressions = {
+                wait: [{ Eyebrows: 'Soft', Eyes: 'VeryLewd', Mouth: 'Frown', Blush: 'High' }],
+                excrete: { Eyebrows: 'Raised', Eyes: 'LewdHeartPink', Mouth: 'Ahegao', Blush: 'VeryHigh' },
+                blank: { Eyebrows: 'Lowered', Eyes: 'Dazed', Mouth: 'Frown', Blush: 'VeryHigh' },
+            };
+            cfg2.sounds = { wait: ['http://w.mp3'], excrete: [], feed: [] };
+            fakePlayer.Appearance.forEach(a => { if (a.Property) a.Property.Expression = null; });
+            window.__audioStarts = 0;
+            window.__sendLog = [];
+            const origSend = window.ServerSend;
+            window.ServerSend = (cmd, data) => { window.__sendLog.push({ cmd, data }); origSend(cmd, data); };
+            window.__hooks['ActivityRun']([fakePlayer, fakePlayer, { Name: 'ItemMouth' }, { Activity: { Name: 'SipItem' }, Item: handItem }], () => {});
+            // 段位置 1s：音效 + 表情同一时间点"一起出现"（轮询等段触发 + 广播落盘，后台标签节流安全）
+            // 超时 600s：广播走 250ms 限速队列（setTimeout flush），标签深度冻结恢复后定时器补跑较慢，窗口放宽防误报
+            waitUntil(() => {
+                const eyesItem = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes');
+                const bcast = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Sound' &&
+                    String((x.data?.Dictionary || []).find(d => d?.Tag === 'Kind')?.Value) === 'wait');
+                return eyesItem?.Property?.Expression === 'VeryLewd' && window.__audioStarts >= 1 && bcast;
+            }, (triggered) => {
+                // 段位置 1s：音效 + 表情同一时间点"一起出现"
+                const eyesItem = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes');
+                const eyesVal = eyesItem?.Property?.Expression;
+                const eyes2Item = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes2');
+                const eyes2Val = eyes2Item?.Property?.Expression;
+                const sndPlayed = window.__audioStarts >= 1;
+                const sndBroadcast = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Sound' &&
+                    String((x.data?.Dictionary || []).find(d => d?.Tag === 'Kind')?.Value) === 'wait');
+                check('等待音效+表情同步（同一时间点出现）', !!eyesVal && eyesVal === eyes2Val && sndPlayed && sndBroadcast,
+                    'Eyes=' + (eyesVal || '无') + ' 音效=' + sndPlayed + ' 广播=' + sndBroadcast +
+                    ' waitS=' + cfg2.waitSeconds + ' pool=' + (cfg2.expressions.wait || []).length +
+                    ' sndPool=' + (cfg2.sounds.wait || []).length + ' / 状态: ' + window.PEX.status());
+                window.ServerSend = origSend;
+                window.PEX.reset();
+                window.__audioStarts = 0;
+                cfg2.waitSeconds = 30;
+
+                // 12. 远程凝胶：他人 BLANK 状态 → DrawCharacter 时画到角色脚下                //（先画 → 角色画布覆盖上去 = 凝胶被衣服遮住）
+                fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', gelId: '999-testgel', type: 'persona', owner: 99999 };
+                setTimeout(() => {
+                    const origRz = window.DrawImageResize;
+                    let rzCount = 0;
+                    window.DrawImageResize = (...a) => { rzCount++; return origRz(...a); };
+                    if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => {});
+                    window.DrawImageResize = origRz;
+                    check('远程凝胶（角色脚下底层绘制）', rzCount > 0, '绘制=' + rzCount);
+                    fakeOther.OnlineSharedSettings.PEX.state = null;
+                    setTimeout(() => {
+                        let rz2 = 0;
+                        const origR2 = window.DrawImageResize;
+                        window.DrawImageResize = (...a) => { rz2++; return origR2(...a); };
+                        if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => {});
+                        window.DrawImageResize = origR2;
+                        check('远程凝胶消失', rz2 === 0, '绘制=' + rz2);
+                    // 凝胶图层：默认 24（顶层，next 后画）；<24（next 前画，被角色遮）
+                    fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', gelId: 'gel-layer', type: 'persona', owner: 99999 };
+                    let before = 0, after = 0;
+                    const origRz3 = window.DrawImageResize;
+                    window.__inNext = false;
+                    window.DrawImageResize = (...a) => { if (window.__inNext) after++; else before++; return origRz3(...a); };
+                    if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => { window.__inNext = true; });
+                    window.__inNext = false;
+                    window.DrawImageResize = origRz3;
+                    check('凝胶默认 24 层（顶层绘制）', before === 0 && after > 0, 'before=' + before + ' after=' + after);
+                    window.PEX.getConfig().gelLayer = 7;
+                    before = 0; after = 0;
+                    window.__inNext = false;
+                    window.DrawImageResize = (...a) => { if (window.__inNext) after++; else before++; return origRz3(...a); };
+                    if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => { window.__inNext = true; });
+                    window.__inNext = false;
+                    window.DrawImageResize = origRz3;
+                    check('凝胶 <24 层（角色之下被遮）', before > 0 && after === 0, 'before=' + before + ' after=' + after);
+                    window.PEX.getConfig().gelLayer = 24;
+                    fakeOther.OnlineSharedSettings.PEX.state = null;
+
+                        // 12b. 英文写死关键词（persona）触发
+                        window.PEX.reset();
+                        handItem = {
+                            Asset: { Name: 'MedicalInjector', Group: { Name: 'ItemHandheld' }, Description: 'a syringe' },
+                            Craft: { Name: 'Persona Potion Deluxe', Description: 'inject me', MemberNumber: 12345, Property: 'Normal' },
+                            Color: undefined, Difficulty: 1, Property: {},
+                        };
+                        window.__hooks['ActivityRun']([fakePlayer, fakePlayer, { Name: 'ItemLegs' }, { Activity: { Name: 'Inject' }, Item: handItem }], () => {});
+                        setTimeout(() => {
+                            const sEn = window.PEX.status();
+                            check('英文写死关键词 persona 触发', sEn.includes('等待'), sEn);
+                            window.PEX.reset();
+
+                            // 12c. 远程排出动画：他人 EXCRETING → scan 启动动画 → DrawCharacter 画动画帧
+                            fakeOther.OnlineSharedSettings.PEX.state = { mode: 'excreting', type: 'persona', startedAt: Date.now() };
+                            setTimeout(() => {
+                                // scan（1s 内）已把动画条目写进 _canvasAnims → DrawCharacter 画帧
+                                const origDRc = window.DrawRect;
+                                let drc = 0;
+                                window.DrawRect = (...a) => { drc++; return origDRc(...a); };
+                                if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => {});
+                                window.DrawRect = origDRc;
+                                check('远程排出动画播放（角色脚下底层绘制）', drc > 0, '绘制帧=' + drc);
+                                fakeOther.OnlineSharedSettings.PEX.state = null;
+
+                                // 12d. 实时状态同步：PEX_StateSync 消息 → 房间角色缓存立即刷新
+                                //（不依赖服务器 OnlineSharedSettings 房间延迟——捡起按钮/凝胶可见性的根因）
+                                fakeOther.OnlineSharedSettings.PEX.state = null;
+                                window.__hooks['ChatRoomMessage']([{
+                                    Type: 'Hidden', Content: 'PEX_StateSync', Sender: 99999,
+                                    Dictionary: [{ Tag: 'Payload', Value: JSON.stringify({ mode: 'blank', gelId: 'sync-gel', type: 'persona', owner: 99999 }) }],
+                                }], () => {});
+                                const synced = fakeOther.OnlineSharedSettings.PEX.state?.gelId === 'sync-gel';
+                                check('实时状态同步 PEX_StateSync', synced, synced ? '✅' : '❌');
+
+                                // 12e. 捡起凝胶 = 原生对话活动（注入 DialogActivity + 中文文案 + 排除自己）
+                                handItem = null;   // 捡起条件：手要空
+                                window.DialogActivity.length = 0;
+                                window.__hooks['DialogBuildActivities']([fakeOther], () => {});
+                                const injected = window.DialogActivity.some(a => a?.Activity?.Name === 'PEX_PickupGel');
+                                check('捡起凝胶活动注入（对方可捡）', injected, injected ? '✅' : '❌');
+                                const label = window.__hooks['ActivityDictionaryText'](
+                                    ['ChatSelf-ItemHands-PEX_PickupGel'], () => 'fallback');
+                                check('捡起凝胶按钮中文文案', label === '捡起凝胶', '文案: ' + label);
+                                window.DialogActivity.length = 0;
+                                if (!fakePlayer.OnlineSharedSettings.PEX) fakePlayer.OnlineSharedSettings.PEX = { state: null };
+                                fakePlayer.OnlineSharedSettings.PEX.state = { mode: 'blank', gelId: 'mine' };
+                                window.__hooks['DialogBuildActivities']([fakePlayer], () => {});
+                                const notSelf = !window.DialogActivity.some(a => a?.Activity?.Name === 'PEX_PickupGel');
+                                fakePlayer.OnlineSharedSettings.PEX.state = null;
+                                check('自己失神时不显示捡起按钮', notSelf, notSelf ? '✅' : '❌');
+
+                                // 12f. 捡起后选项消失（PEX_GelHeld 更新 gelHolder）+ 手持凝胶时显示"放回"
+                                window.__hooks['ChatRoomMessage']([{
+                                    Type: 'Hidden', Content: 'PEX_GelHeld', Sender: 12345,
+                                    Dictionary: [{ Tag: 'GelId', Value: 'sync-gel' }, { Tag: 'Holder', Value: '12345' }, { Tag: 'Owner', Value: '99999' }],
+                                }], () => {});
+                                const held = fakeOther.OnlineSharedSettings.PEX.state?.gelHolder === 12345;
+                                check('捡起后选项消失（gelHolder 更新）', held, held ? '✅' : '❌');
+                                // 12g. 凝胶唯一性：主人（自己）收到 PEX_GelHeld → 立即广播持有者
+                                //（否则例行公告用旧值覆盖 → 凝胶"又出现"；轮询等广播落盘）
+                                window.__hooks['ChatRoomMessage']([{
+                                    Type: 'Hidden', Content: 'PEX_GelHeld', Sender: 99999,
+                                    Dictionary: [{ Tag: 'GelId', Value: 'sync-gel' }, { Tag: 'Holder', Value: '99999' }, { Tag: 'Owner', Value: '12345' }],
+                                }], () => {});
+                                waitUntil(() => {
+                                    const payloadEntry = (window.__lastSend?.data?.Dictionary || []).find(e => e && e.Tag === 'Payload');
+                                    return (payloadEntry && payloadEntry.Value || '').includes('"gelHolder":99999');
+                                }, (ok) => {
+                                    const payloadEntry = (window.__lastSend?.data?.Dictionary || []).find(e => e && e.Tag === 'Payload');
+                                    const lastPayload = (payloadEntry && payloadEntry.Value) || '';
+                                    const gelUnique = lastPayload.includes('"gelHolder":99999');
+                                    check('凝胶唯一性（捡起后立即广播持有者）', gelUnique,
+                                        gelUnique ? '✅' : '❌ last=' + (window.__lastSend?.cmd || '无') + ' ' + lastPayload.slice(0, 100));
+                                }, 300000);
+                                window.DialogActivity.length = 0;
+                                window.__hooks['DialogBuildActivities']([fakeOther], () => {});
+                                const noPickup = !window.DialogActivity.some(a => a?.Activity?.Name === 'PEX_PickupGel');
+                                check('被捡走后不再显示捡起选项', noPickup, noPickup ? '✅' : '❌');
+                                handItem = {
+                                    Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: '' },
+                                    Craft: { Name: '某人的人格凝胶', Description: 'PEX|sync-gel|99999|' + (Date.now() + 60000), MemberNumber: 99999, Property: 'Normal' },
+                                    Color: undefined, Difficulty: 1, Property: {},
+                                };
+                                window.DialogActivity.length = 0;
+                                window.__hooks['DialogBuildActivities']([fakeOther], () => {});
+                                const hasPut = window.DialogActivity.some(a => a?.Activity?.Name === 'PEX_PutGel');
+                                check('手持凝胶时显示放回凝胶选项', hasPut, hasPut ? '✅' : '❌');
+                                poseBlockRegression();
+                            }, 1800);
+                        }, 300);
+                    }, 2200);
+                }, 2200);
+                }, 2500);
+        }, 600000);
+    }
+
+    // ── 12h~12l：姿势即时封锁回归 + 凝胶到期选项 ──
+    function poseBlockRegression() {
+        // 12h. 失神瞬间主动 PoseRefresh → 姿势当场封锁（根因回归：曾依赖 applyBlankFace
+        //  的刷新——它在 setBodyBlock(true) 之前，导致排出后还能改一次姿势才灰）
+        let pfxCalls = 0;
+        const pfxOrig = window.PoseRefresh;
+        window.PoseRefresh = (C) => { pfxCalls++; if (C) C.AllowedActivePoseMapping = {}; };
+        window.PEX.reset();
+        const cfgH = window.PEX.getConfig();
+        cfgH.waitSeconds = 0;
+        cfgH.autoRevertEnabled = false;
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 轮询等失神（后台标签节流安全）
+        waitUntil(() => window.PEX.status().includes('失神'), () => {
+            const sH = window.PEX.status();
+            const called = pfxCalls > 0;
+            window.PoseRefresh = pfxOrig;
+            check('失神瞬间主动 PoseRefresh（姿势立即封锁）', sH.includes('失神') && called,
+                sH + ' / PoseRefresh 调用=' + pfxCalls);
+            window.PEX.reset();
+            cfgH.waitSeconds = 30;
+            cfgH.autoRevertEnabled = true;
+            gelExpireTests();
+        }, 300000);
+    }
+
+    function gelExpireTests() {
+        // 12i. PEX_GelInvalidated 广播 → 持有者手上的凝胶变无效（名字+INVALID 标记）
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: '' },
+            Craft: { Name: '测试员的人格凝胶', Description: 'PEX|gel-inv|12345|' + (Date.now() + 60000), MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        window.__hooks['ChatRoomMessage']([{
+            Type: 'Hidden', Content: 'PEX_GelInvalidated', Sender: 12345,
+            Dictionary: [{ Tag: 'GelId', Value: 'gel-inv' }, { Tag: 'Owner', Value: '12345' }],
+        }], () => {});
+        const invItem = handItem;
+        const invOk = !!invItem && invItem.Craft.Name === '测试员的无效凝胶' && String(invItem.Craft.Description).includes('|INVALID');
+        check('PEX_GelInvalidated → 变无效凝胶', invOk, invOk ? invItem.Craft.Name + ' / ' + invItem.Craft.Description : '❌');
+
+        // 12j. 无效凝胶不能放回喂回（canPutBack 排除 INVALID）
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', gelId: 'gel-inv', type: 'persona', owner: 12345 };
+        window.DialogActivity.length = 0;
+        window.__hooks['DialogBuildActivities']([fakeOther], () => {});
+        const noPutInvalid = !window.DialogActivity.some(a => a?.Activity?.Name === 'PEX_PutGel');
+        fakeOther.OnlineSharedSettings.PEX.state = null;
+        check('无效凝胶不能放回喂回', noPutInvalid, noPutInvalid ? '✅' : '❌');
+
+        // 12k. 手持过期凝胶兜底（publishTick 每秒自动检查，模拟没收到广播的持有者）
+        const cfgK = window.PEX.getConfig();
+        cfgK.gelExpireMode = 'invalid';
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: '' },
+            Craft: { Name: '测试员的人格凝胶', Description: 'PEX|gel-exp|12345|' + (Date.now() - 5000), MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        setTimeout(() => {
+            const invNow = handItem === null ? 'removed' : (String(handItem.Craft.Description).includes('INVALID') ? 'invalid' : 'unchanged');
+            check('过期凝胶 invalid 模式 → 无效化（兜底）', invNow === 'invalid', invNow);
+            cfgK.gelExpireMode = 'vanish';
+            handItem = {
+                Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: '' },
+                Craft: { Name: '测试员的人格凝胶', Description: 'PEX|gel-exp2|12345|' + (Date.now() - 5000), MemberNumber: 12345, Property: 'Normal' },
+                Color: undefined, Difficulty: 1, Property: {},
+            };
+            setTimeout(() => {
+                const goneNow = handItem === null;
+                check('过期凝胶 vanish 模式 → 移除（兜底）', goneNow, goneNow ? '✅' : '❌ 还在: ' + (handItem?.Craft?.Description || '无'));
+                cfgK.gelExpireMode = 'vanish';
+
+                // 12l. 无效凝胶被喝：消耗移除但不触发任何流程（主人不受影响）
+                window.PEX.reset();
+                handItem = {
+                    Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: '' },
+                    Craft: { Name: '测试员的无效凝胶', Description: 'PEX|gel-drink|12345|' + (Date.now() + 60000) + '|INVALID', MemberNumber: 12345, Property: 'Normal' },
+                    Color: undefined, Difficulty: 1, Property: {},
+                };
+                fireActivity('SipItem', 12345);
+                setTimeout(() => {
+                    const drankGone = handItem === null;
+                    const sL = window.PEX.status();
+                    check('无效凝胶被喝 → 消耗且不触发', drankGone && sL.includes('正常'), sL + ' / 消耗=' + drankGone);
+                    blockedPoseTests();
+                }, 400);
+            }, 2200);
+        }, 2200);
+    }
+
+    // ── 13a~13e：BLOCKED 表情恢复 / 动画去重 / 普通凝胶完整流程 / 计时器四档 ──
+    function blockedPoseTests() {
+        // 13a. 臀部被挡 → 等待期表情恢复正常；拿掉遮挡 → 照常排出失神
+        window.PEX.reset();
+        const cfgA = window.PEX.getConfig();
+        cfgA.waitSeconds = 4;   // → 1 段等待音效+表情，段在 2s（检查留节流余量）
+        cfgA.autoRevertEnabled = false;
+        // 固定等待表情池（避免随机）：VeryLewd 一组
+        cfgA.expressions = {
+            wait: [{ Eyebrows: 'Soft', Eyes: 'VeryLewd', Mouth: 'Frown', Blush: 'High' }],
+            excrete: { Eyebrows: 'Raised', Eyes: 'LewdHeartPink', Mouth: 'Ahegao', Blush: 'VeryHigh' },
+            blank: { Eyebrows: 'Lowered', Eyes: 'Dazed', Mouth: 'Frown', Blush: 'VeryHigh' },
+        };
+        fakePlayer.Appearance.forEach(a => { if (a.Property) a.Property.Expression = null; });
+        __buttBlocked = true;
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 段 2s 触发（轮询，后台标签节流安全）
+        waitUntil(() => {
+            const e = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes');
+            return e?.Property?.Expression === 'VeryLewd';
+        }, () => {
+            const eyesA = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression;
+            check('等待期表情 1（段 2s 处播）', eyesA === 'VeryLewd', 'Eyes=' + eyesA);
+            // 检查 2：臀部被挡 → 表情恢复正常（轮询等 BLOCKED，后台标签节流安全）
+            waitUntil(() => window.PEX.status().includes('遮挡')
+                && fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression === 'Normal',
+            () => {
+                const sB = window.PEX.status();
+                const eyesB = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression;
+                check('臀部被挡后表情恢复正常', sB.includes('等待') && eyesB === 'Normal', sB + ' / Eyes=' + eyesB);
+                __buttBlocked = false;   // 拿掉遮挡 → 立刻排出
+                setTimeout(() => {
+                    // 第 3 个表情：与排出动画同时播（不再等排出结束才播）
+                    const eyesD = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression;
+                    check('第 3 个表情与排出动画同播', eyesD === 'LewdHeartPink', 'Eyes=' + eyesD);
+                    // 排出剧烈特效：模糊（GetBlurLevel hook 同步可观测）+ 画面震动（rAF 驱动，
+                    // 后台标签 rAF 暂停 → 轮询"模糊或震动"，震动信息仅展示）
+                    waitUntil(() => {
+                        const blurD = (window.__hooks['Player.GetBlurLevel'] || (() => 0))([false], () => 0);
+                        return blurD > 0 || !!document.getElementById('MainCanvas')?.style.transform;
+                    }, (fxSeen) => {
+                        const blurD = (window.__hooks['Player.GetBlurLevel'] || (() => 0))([false], () => 0);
+                        const shaking = !!document.getElementById('MainCanvas')?.style.transform;
+                        check('排出动画期间模糊+震动', blurD > 0, '模糊=' + blurD + ' 震动=' + shaking + '（后台标签 rAF 可能暂停）');
+                        // 检查 4：失神定格（轮询等 BLANK）
+                        waitUntil(() => window.PEX.status().includes('失神')
+                            && fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression === 'Dazed',
+                        () => {
+                            const sC = window.PEX.status();
+                            const eyesC = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression;
+                            check('拿掉遮挡后照常排出失神（表情定格）', sC.includes('失神') && eyesC === 'Dazed', sC + ' / Eyes=' + eyesC);
+                            window.PEX.reset();
+                            cfgA.waitSeconds = 30;
+                            cfgA.autoRevertEnabled = true;
+                            animDedupeTest();
+                        }, 300000);
+                    }, 300000);
+                }, 1300);
+            }, 300000);
+        }, 300000);
+    }
+
+    function animDedupeTest() {
+        // 13b. 远程动画同一 startedAt 不重播：
+        // 房间同步延迟下旧 EXCRETING 状态滞留时，曾因 2.8s 删 key 被扫到重播（"动画播了 2 遍"）
+        const origDR = window.DrawRect;
+        let drCount = 0;
+        window.DrawRect = (...a) => { drCount++; return origDR(...a); };
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'excreting', type: 'persona', startedAt: 111 };
+        setTimeout(() => {
+            // 5.5 秒：动画（≤1s 启动 + 2.6s）早已结束 → DrawCharacter 不再画动画帧
+            //（旧逻辑 ~3.4s 重播 → t0 被重置 → 此刻还在画）
+            if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => {});
+            window.DrawRect = origDR;
+            fakeOther.OnlineSharedSettings.PEX.state = null;
+            check('远程动画同一 startedAt 不重播', drCount === 0, 'DrawRect 调用=' + drCount);
+            normalGelFlowTest();
+        }, 5500);
+    }
+
+    function normalGelFlowTest() {
+        // 13c. 普通凝胶完整流程：喝下 → 排出 → 凝胶落地但无失神限制 → 喂回状态结束
+        window.PEX.reset();
+        const cfgC = window.PEX.getConfig();
+        cfgC.waitSeconds = 0;
+        cfgC.autoRevertEnabled = false;
+        fakePlayer.Appearance.forEach(a => { if (a.Property) a.Property.Expression = null; });
+        window.__sendLog = [];
+        const origSend = window.ServerSend;
+        window.ServerSend = (cmd, data) => { window.__sendLog.push({ cmd, data }); origSend(cmd, data); };
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '舒缓凝胶药剂', Description: '温和的东西', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 轮询等普通凝胶落地（后台标签节流安全）
+        waitUntil(() => window.PEX.status().includes('凝胶排出'), () => {
+            const sN = window.PEX.status();
+            const stN = fakePlayer.OnlineSharedSettings.PEX?.state;
+            const cwN = window.__hooks['Player.CanWalk']([], () => true);
+            const ciN = window.__hooks['Player.CanInteract']([], () => true);
+            const blN = (window.__hooks['Player.GetBlindLevel'] || (() => 0))([false], () => 0);
+            const blurN = (window.__hooks['Player.GetBlurLevel'] || (() => 0))([false], () => 0);
+            const noBlink = fakePlayer.BlinkFactor !== 999999;
+            const gelDown = !!stN && !!stN.gelId && !stN.gelHolder;
+            const announced = (window.__sendLog || []).some(s => String(s.data?.Content || '').includes('普通凝胶'));
+            check('普通凝胶：凝胶落地但无失神限制',
+                sN.includes('凝胶排出') && cwN === true && ciN === true && !blN && !blurN && noBlink && gelDown,
+                sN + ' / CanWalk=' + cwN + ' CanInteract=' + ciN + ' 视野=' + blN + ' 模糊=' + blurN + ' 不眨眼=' + noBlink + ' 凝胶=' + gelDown);
+            check('普通凝胶排出播报', announced, announced ? '✅' : '❌');
+            // 喂回普通凝胶 → 状态结束（主人本来就没失神，只是状态关闭）
+            window.__hooks['ChatRoomMessage']([{
+                Type: 'Hidden', Content: 'PEX_GelConsumed', Sender: 99999,
+                Dictionary: [{ Tag: 'GelId', Value: stN?.gelId }, { Tag: 'Drinker', Value: '12345' }, { Tag: 'Owner', Value: '12345' }],
+            }], () => {});
+            setTimeout(() => {
+                const sR = window.PEX.status();
+                window.ServerSend = origSend;
+                check('普通凝胶喂回后状态结束', sR.includes('正常'), sR);
+                window.PEX.reset();
+                cfgC.waitSeconds = 30;
+                cfgC.autoRevertEnabled = true;
+                normalWaitTest();
+            }, 300);
+        }, 300000);
+    }
+
+    function normalWaitTest() {
+        // 13d. 普通凝胶等待期也有眩晕+表情序列（不再是干等；waitSeconds=3 → 1 段在 1.5s）
+        window.PEX.reset();
+        const cfgD = window.PEX.getConfig();
+        cfgD.waitSeconds = 3;
+        // 固定等待表情池（避免随机）
+        cfgD.expressions = {
+            wait: [{ Eyebrows: 'Soft', Eyes: 'VeryLewd', Mouth: 'Frown', Blush: 'High' }],
+            excrete: { Eyebrows: 'Raised', Eyes: 'LewdHeartPink', Mouth: 'Ahegao', Blush: 'VeryHigh' },
+            blank: { Eyebrows: 'Lowered', Eyes: 'Dazed', Mouth: 'Frown', Blush: 'VeryHigh' },
+        };
+        fakePlayer.Appearance.forEach(a => { if (a.Property) a.Property.Expression = null; });
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '舒缓凝胶药剂', Description: '温和的东西', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 段 1.5s 触发（轮询，后台标签节流安全）
+        waitUntil(() => {
+            const e = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes');
+            return e?.Property?.Expression === 'VeryLewd';
+        }, () => {
+            const eyesD = fakePlayer.Appearance.find(a => a.Asset.Group.Name === 'Eyes')?.Property?.Expression;
+            check('普通凝胶等待期表情序列', eyesD === 'VeryLewd', 'Eyes=' + eyesD);
+            window.PEX.reset();
+            cfgD.waitSeconds = 30;
+            normalGelReflowTest();
+        }, 300000);
+    }
+
+    function normalGelReflowTest() {
+        // 13g. 普通凝胶状态中再次喝下：旧凝胶清掉、重新进入排出等待；
+        // 人格凝胶失神中再喝仍被拒绝（对照——用户要求检查人格凝胶有没有同样问题）
+        window.PEX.reset();
+        const cfgG = window.PEX.getConfig();
+        cfgG.waitSeconds = 2;
+        cfgG.autoRevertEnabled = false;
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '舒缓凝胶药剂', Description: '温和的东西', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 轮询等普通凝胶落地（第一次流程完成，后台标签节流安全）
+        waitUntil(() => window.PEX.status().includes('凝胶排出'), () => {
+            // 第一次流程完成（2s 等待 + 动画）→ BLANK normal（凝胶还在）
+            const s1 = window.PEX.status();
+            window.__sendLog = [];
+            const origSend = window.ServerSend;
+            window.ServerSend = (cmd, data) => { window.__sendLog.push({ cmd, data }); origSend(cmd, data); };
+            fireActivity('SipItem', 12345);   // 第二次喝普通凝胶
+            // 轮询等：重新进入等待 + 旧凝胶清除广播落盘（后台标签节流安全）
+            waitUntil(() => {
+                const expiredSent = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_GelExpired');
+                return window.PEX.status().includes('等待') && expiredSent;
+            }, () => {
+                const s2 = window.PEX.status();
+                const expiredSent = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_GelExpired');
+                window.ServerSend = origSend;
+                check('普通凝胶状态中再喝 → 旧凝胶清除+重新等待',
+                    s1.includes('凝胶排出') && s2.includes('等待') && expiredSent,
+                    '第一次=' + s1 + ' / 第二次=' + s2 + ' / 旧凝胶清除广播=' + expiredSent);
+                // 人格凝胶对照：失神中再喝 → 仍被拒绝（状态不变，无清除广播）
+                window.PEX.reset();
+                cfgG.waitSeconds = 0;
+                handItem = {
+                    Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+                    Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+                    Color: undefined, Difficulty: 1, Property: {},
+                };
+                fireActivity('SipItem', 12345);
+                // 轮询等失神（后台标签节流安全）
+                waitUntil(() => window.PEX.status().includes('失神'), () => {
+                    const sP = window.PEX.status();
+                    window.__sendLog = [];
+                    window.ServerSend = (cmd, data) => { window.__sendLog.push({ cmd, data }); origSend(cmd, data); };
+                    fireActivity('SipItem', 12345);   // 失神中再喝
+                    setTimeout(() => {
+                        const sP2 = window.PEX.status();
+                        const expiredP = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_GelExpired');
+                        window.ServerSend = origSend;
+                        check('人格凝胶失神中再喝仍被拒绝', sP.includes('失神') && sP2.includes('失神') && !expiredP,
+                            sP2 + ' / 无清除广播=' + !expiredP);
+                        window.PEX.reset();
+                        cfgG.waitSeconds = 30;
+                        cfgG.autoRevertEnabled = true;
+                        timerVisTests();
+                    }, 500);
+                }, 300000);
+            }, 300000);
+        }, 300000);
+    }
+
+    function timerVisTests() {
+        // 13e. 计时器可见性四档：all / whitelist / self / others（DrawText 计数）
+        const origDT = window.DrawText;
+        let dtCount = 0;
+        window.DrawText = (...a) => { dtCount++; return origDT(...a); };
+        const hk = window.__hooks['ChatRoomCharacterViewDrawOverlay'];
+        const call = (C) => { dtCount = 0; try { hk([C, 100, 200, 1], () => {}); } catch (e) {} return dtCount; };
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', remainingSec: 100, timerVisibility: 'all' };
+        check('计时器 all 档（他人可见）', call(fakeOther) > 0, 'DrawText=' + call(fakeOther));
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', remainingSec: 100, timerVisibility: 'whitelist' };
+        fakeOther.OnlineSharedSettings.PEX.wl = ['12345'];
+        check('计时器 whitelist 档（在白名单可见）', call(fakeOther) > 0, 'DrawText=' + call(fakeOther));
+        fakeOther.OnlineSharedSettings.PEX.wl = ['99999'];
+        check('计时器 whitelist 档（不在白名单不可见）', call(fakeOther) === 0, 'DrawText=' + call(fakeOther));
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', remainingSec: 100, timerVisibility: 'self' };
+        check('计时器 self 档（他人不可见）', call(fakeOther) === 0, 'DrawText=' + call(fakeOther));
+        fakePlayer.OnlineSharedSettings.PEX.state = { mode: 'blank', remainingSec: 100, timerVisibility: 'self' };
+        check('计时器 self 档（自己可见）', call(fakePlayer) > 0, 'DrawText=' + call(fakePlayer));
+        fakePlayer.OnlineSharedSettings.PEX.state = { mode: 'blank', remainingSec: 100, timerVisibility: 'others' };
+        check('计时器 others 档（自己不可见）', call(fakePlayer) === 0, 'DrawText=' + call(fakePlayer));
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', remainingSec: 100, timerVisibility: 'others' };
+        check('计时器 others 档（他人可见）', call(fakeOther) > 0, 'DrawText=' + call(fakeOther));
+        window.DrawText = origDT;
+        fakeOther.OnlineSharedSettings.PEX.state = null;
+        fakePlayer.OnlineSharedSettings.PEX.state = null;
+        blinkLockTest();
+    }
+
+    function blinkLockTest() {
+        // 13f. 眨眼 = 角色级表现：失神者无论哪个客户端渲染都不眨眼；
+        // 普通凝胶/正常人任何地方都正常眨眼（DrawCharacter 绘制前锁、绘制后还原）
+        const hk = window.__hooks['DrawCharacter'];
+        fakeOther.BlinkFactor = 5;
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', type: 'persona', gelId: 'b1', remainingSec: 100 };
+        let duringNext = null;
+        try { if (typeof hk === 'function') hk([fakeOther, 100, 200, 1], () => { duringNext = fakeOther.BlinkFactor; }); } catch (e) {}
+        const restored = fakeOther.BlinkFactor === 5;
+        check('失神者在他处渲染也不眨眼（角色级）', duringNext === 999999 && restored,
+            'next期间=' + duringNext + ' 还原=' + restored);
+        fakeOther.OnlineSharedSettings.PEX.state = { mode: 'blank', type: 'normal', gelId: 'b2', remainingSec: 100 };
+        let duringNormal = null;
+        try { hk([fakeOther, 100, 200, 1], () => { duringNormal = fakeOther.BlinkFactor; }); } catch (e) {}
+        check('普通凝胶状态正常眨眼', duringNormal === 5, 'next期间=' + duringNormal);
+        fakeOther.OnlineSharedSettings.PEX.state = null;
+        fakeOther.BlinkFactor = undefined;
+        fxSwitchTests();
+    }
+
+    function fxSwitchTests() {
+        // 15. 特效与限制开关的行为测试（每个开关一个断言）
+        const cfg = window.PEX.getConfig();
+        // 15a. fxBlank 关 → 失神无黑白
+        window.PEX.reset();
+        cfg.waitSeconds = 0;
+        cfg.fxBlank = false;
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 轮询等失神（后台标签节流安全）
+        waitUntil(() => window.PEX.status().includes('失神'), () => {
+            const canvasEl = document.getElementById('MainCanvas');
+            const gray = (canvasEl.style.filter || '').includes('grayscale');
+            const s1 = window.PEX.status();
+            check('fxBlank 关 → 失神无黑白', s1.includes('失神') && !gray, s1 + ' / 黑白=' + gray);
+            cfg.fxBlank = true;
+            window.PEX.reset();
+            // 15b. restrictions 关 → 失神能动
+            cfg.restrictions = false;
+            fireActivity('SipItem', 12345);
+            waitUntil(() => window.PEX.status().includes('失神'), () => {
+                const cw = window.__hooks['Player.CanWalk']([], () => true);
+                const s2 = window.PEX.status();
+                check('restrictions 关 → 失神能动', s2.includes('失神') && cw === true, s2 + ' / CanWalk=' + cw);
+                cfg.restrictions = true;
+                window.PEX.reset();
+                // 15c. seeRemoteAnims 关 → 远程动画不播
+                cfg.seeRemoteAnims = false;
+                const origDR = window.DrawRect;
+                let dr = 0;
+                window.DrawRect = (...a) => { dr++; return origDR(...a); };
+                fakeOther.OnlineSharedSettings.PEX.state = { mode: 'excreting', type: 'persona', startedAt: 222 };
+                setTimeout(() => {
+                    if (window.__hooks['DrawCharacter']) window.__hooks['DrawCharacter']([fakeOther, 100, 200, 1], () => {});
+                    window.DrawRect = origDR;
+                    fakeOther.OnlineSharedSettings.PEX.state = null;
+                    check('seeRemoteAnims 关 → 远程动画不播', dr === 0, 'DrawRect=' + dr);
+                    cfg.seeRemoteAnims = true;
+                    window.PEX.reset();
+                    cfg.waitSeconds = 30;
+                    soundTests();
+                }, 2200);
+            }, 300000);
+        }, 300000);
+    }
+
+    function soundTests() {
+        // 16. 音效：排出（动画期间）+ 放回（黑白淡出结束后才播）+ PEX_Sound 广播 + 类别开关
+        const cfg = window.PEX.getConfig();
+        cfg.sounds = { wait: ['http://w.mp3'], excrete: ['http://b.mp3'], feed: ['http://c.mp3'] };
+        cfg.waitSeconds = 0;
+        cfg.autoRevertEnabled = false;
+        window.__audioStarts = 0;
+        window.__sendLog = [];
+        const origSend = window.ServerSend;
+        window.ServerSend = (cmd, data) => { window.__sendLog.push({ cmd, data }); origSend(cmd, data); };
+        handItem = {
+            Asset: { Name: 'GlassFilled', Group: { Name: 'ItemHandheld' }, Description: 'a filled glass' },
+            Craft: { Name: '神秘的人格药水', Description: '测试', MemberNumber: 12345, Property: 'Normal' },
+            Color: undefined, Difficulty: 1, Property: {},
+        };
+        fireActivity('SipItem', 12345);
+        // 先等失神（动画结束进黑白）再检查音效与喂回——否则喂回落在动画中会被忽略
+        waitUntil(() => window.PEX.status().includes('失神'), () => {
+            const n1 = window.__audioStarts;
+            const exBcast = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Sound' &&
+                String((x.data?.Dictionary || []).find(d => d?.Tag === 'Kind')?.Value) === 'excrete');
+            check('排出音效播放 + 广播', n1 >= 1 && exBcast, '播放=' + n1 + ' 广播=' + exBcast);
+            // 喂回 → 放回音效：黑白淡出（0.8s）结束后才播
+            window.__hooks['ChatRoomMessage']([{
+                Type: 'Hidden', Content: 'PEX_GelConsumed', Sender: 99999,
+                Dictionary: [{ Tag: 'GelId', Value: 'x' }, { Tag: 'Drinker', Value: '12345' }, { Tag: 'Owner', Value: '12345' }],
+            }], () => {});
+            setTimeout(() => {
+                const duringFade = window.__audioStarts;
+                check('放回音效延迟（淡出中不播）', duringFade === n1, '播放=' + duringFade);
+                // 淡出（0.8s）结束后才播放回音效（轮询，后台标签节流安全）
+                waitUntil(() => window.__audioStarts >= n1 + 1, () => {
+                    const afterFade = window.__audioStarts;
+                    const fdBroadcast = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Sound' &&
+                        String((x.data?.Dictionary || []).find(d => d?.Tag === 'Kind')?.Value) === 'feed');
+                    check('放回音效淡出结束后播放 + 广播', afterFade === n1 + 1 && fdBroadcast,
+                        '播放=' + afterFade + ' 广播=' + fdBroadcast);
+                    // 音效类别开关：关 wait → 等待段不播也不广播
+                    cfg.soundOn = { wait: false, excrete: true, feed: true };
+                    cfg.waitSeconds = 4;   // → 1 段在 2s
+                    cfg.sounds = { wait: ['http://w2.mp3'], excrete: [], feed: [] };
+                    const n2 = window.__audioStarts;
+                    window.__sendLog = [];
+                    fireActivity('SipItem', 12345);
+                    setTimeout(() => {
+                        const n3 = window.__audioStarts;
+                        const waitBcast = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Sound' &&
+                            String((x.data?.Dictionary || []).find(d => d?.Tag === 'Kind')?.Value) === 'wait');
+                        check('wait 开关关 → 等待段不播不广播', n3 === n2 && !waitBcast,
+                            '播放=' + (n3 - n2) + ' 广播=' + waitBcast);
+                        window.ServerSend = origSend;
+                        window.PEX.reset();
+                        cfg.waitSeconds = 30;
+                        cfg.autoRevertEnabled = true;
+                        cfg.soundOn = { wait: true, excrete: true, feed: true };
+                        cfg.sounds = { wait: [], excrete: [], feed: [] };
+                        soundSystemTests();
+                    }, 4500);
+                }, 300000);
+            }, 250);
+        }, 300000);
+    }
+
+    // ── 16b~16f：等待音效/表情系统 + PEX_Sound 接收 + 默认值 + 旧存档迁移 ──
+    function soundSystemTests() {
+        // 干净默认态：清本地音效存档 + 旧备份 + 账号存档 → 重载走默认
+        try { localStorage.removeItem('PEX_sounds'); } catch (e) {}
+        try { localStorage.removeItem('PEX_settings_backup_12345'); } catch (e) {}
+        delete fakePlayer.ExtensionSettings.PEX;
+        try { window.PEX.reload(); } catch (e) {}
+        let cfg = window.PEX.getConfig();   // reload 后重新取（setConfig 会换对象引用）
+        // 16b. 段数与段位置纯函数（10/20/30/40/50/120 秒 → 1/2/3/4/5/5 段；30s 段位 7.5/15/22.5s）
+        const n10 = waitFxSegment(10), n20 = waitFxSegment(20), n30 = waitFxSegment(30);
+        const n40 = waitFxSegment(40), n50 = waitFxSegment(50), n120 = waitFxSegment(120);
+        const t30 = waitFxTimes(30000, n30);
+        check('等待段数公式 10/20/30/40/50/120 → 1/2/3/4/5/5', n10 === 1 && n20 === 2 && n30 === 3 && n40 === 4 && n50 === 5 && n120 === 5,
+            [n10, n20, n30, n40, n50, n120].join('/'));
+        check('段位置均匀分布（30s → 7.5/15/22.5s）', t30.length === 3 && t30[0] === 7500 && t30[1] === 15000 && t30[2] === 22500,
+            t30.join('/'));
+        // 16c. 默认等待音效 5 段（CDN URL）
+        const defSounds = (cfg.sounds.wait || []).slice();
+        check('默认等待音效 5 段（CDN URL）', Array.isArray(defSounds) && defSounds.length === 5 &&
+            defSounds.every(u => String(u).startsWith('https://cdn.jsdelivr.net/gh/')), 'N=' + defSounds.length);
+        // 16c1. 排出/放回默认音效也在（旧存档空数组不再吞默认）
+        const exDef = cfg.sounds.excrete || [], fdDef = cfg.sounds.feed || [];
+        check('默认排出/放回音效（CDN URL）',
+            Array.isArray(exDef) && exDef.length >= 1 && Array.isArray(fdDef) && fdDef.length >= 1
+            && String(exDef[0]).startsWith('https://cdn.jsdelivr.net/gh/')
+            && String(fdDef[0]).startsWith('https://cdn.jsdelivr.net/gh/'),
+            'excrete=' + exDef.length + ' feed=' + fdDef.length);
+        // 16c2. 图片工具（CDN URL 格式 + 精灵图切片）
+        const imgUrl = (window.PEX.images && window.PEX.images.imageUrl('gel.png')) || '';
+        check('图片工具 CDN URL', imgUrl === 'https://cdn.jsdelivr.net/gh/Nice8923/BC-PEX@main/Images/gel.png', imgUrl);
+        const fr = window.PEX.images && window.PEX.images.spriteFrame ? null : null;
+        if (window.PEX.images && typeof window.PEX.images.spriteFrame === 'function') {
+            const f0 = window.PEX.images.spriteFrame(2, 2, 0, 64, 64);
+            const f3 = window.PEX.images.spriteFrame(2, 2, 3, 64, 64);
+            check('精灵图切片（2×2 第 0/3 帧）', f0.sx === 0 && f0.sy === 0 && f3.sx === 64 && f3.sy === 64,
+                JSON.stringify([f0, f3]));
+        } else {
+            check('精灵图切片（2×2 第 0/3 帧）', false, 'spriteFrame 未导出');
+        }
+        // 16d. 默认值：waitSeconds 50 / soundOn 全开 / hearRemoteSounds 关 / expressions 新结构
+        check('waitSeconds 默认 50（最低 10）', cfg.waitSeconds === 50, 'waitSeconds=' + cfg.waitSeconds);
+        check('音效开关默认全开', cfg.soundOn && cfg.soundOn.wait === true && cfg.soundOn.excrete === true && cfg.soundOn.feed === true, JSON.stringify(cfg.soundOn));
+        check('其他玩家音效开关默认关', cfg.hearRemoteSounds === false, 'hearRemoteSounds=' + cfg.hearRemoteSounds);
+        const exprObj = cfg.expressions || {};
+        check('expressions 新结构（wait 池 2 组 + excrete + blank）',
+            Array.isArray(exprObj.wait) && exprObj.wait.length === 2 && !!exprObj.excrete && !!exprObj.blank,
+            'wait=' + (Array.isArray(exprObj.wait) ? exprObj.wait.length : '?'));
+        // 16e. 其他玩家音效接收：默认关不播；打开后播；自己的消息不回播（播放是异步 fetch+decode → 轮询）
+        const s0 = window.__audioStarts;
+        window.__hooks['ChatRoomMessage']([{
+            Type: 'Hidden', Content: 'PEX_Sound', Sender: 99999,
+            Dictionary: [{ Tag: 'Kind', Value: 'wait' }, { Tag: 'Id', Value: 'http://remote.mp3' }],
+        }], () => {});
+        check('其他玩家音效默认关 → 不播', window.__audioStarts === s0, '播放=' + (window.__audioStarts - s0));
+        cfg = window.PEX.getConfig();
+        cfg.hearRemoteSounds = true;
+        window.__hooks['ChatRoomMessage']([{
+            Type: 'Hidden', Content: 'PEX_Sound', Sender: 99999,
+            Dictionary: [{ Tag: 'Kind', Value: 'wait' }, { Tag: 'Id', Value: 'http://remote.mp3' }],
+        }], () => {});
+        waitUntil(() => window.__audioStarts >= s0 + 1, () => {
+            const s1 = window.__audioStarts;
+            window.__hooks['ChatRoomMessage']([{
+                Type: 'Hidden', Content: 'PEX_Sound', Sender: 12345,   // 自己 → 不回播
+                Dictionary: [{ Tag: 'Kind', Value: 'wait' }, { Tag: 'Id', Value: 'http://self.mp3' }],
+            }], () => {});
+            setTimeout(() => {
+                check('其他玩家音效开关开 → 播；自己的消息不回播', s1 === s0 + 1 && window.__audioStarts === s1,
+                    'remote=' + (s1 - s0) + ' self=' + (window.__audioStarts - s1));
+                cfg.hearRemoteSounds = false;
+                // 16e2. 音量随特效强度（effectLevel=3 → 0.55+3*0.09=0.82）——强度不是摆设
+                cfg.hearRemoteSounds = true;   // 先开接收（16e 结尾已关）
+                cfg.effectLevel = 3;
+                window.__audioStarts = 0;
+                window.__hooks['ChatRoomMessage']([{
+                    Type: 'Hidden', Content: 'PEX_Sound', Sender: 99999,
+                    Dictionary: [{ Tag: 'Kind', Value: 'wait' }, { Tag: 'Id', Value: 'http://remote2.mp3' }],
+                }], () => {});
+                waitUntil(() => window.__audioStarts >= 1, () => {
+                    const vol = window.__lastGain?.gain?.value;
+                    check('音量随特效强度（lv3 → 0.82）', typeof vol === 'number' && Math.abs(vol - 0.82) < 0.001, 'vol=' + vol);
+                    cfg.effectLevel = 3;
+                    cfg.hearRemoteSounds = false;
+                    // 16f. 旧存档迁移：sounds.drink → wait；expressions 旧数组 → 新结构（确定性：直接写旧格式账号存档）
+                    const oldExprs = [
+            { Eyebrows: 'Soft', Eyes: 'VeryLewd', Mouth: 'Frown', Blush: 'High' },
+            { Eyebrows: 'Lowered', Eyes: 'HeartPink', Mouth: 'Moan', Blush: 'High' },
+            { Eyebrows: 'Raised', Eyes: 'LewdHeartPink', Mouth: 'Ahegao', Blush: 'VeryHigh' },
+            { Eyebrows: 'Lowered', Eyes: 'Dazed', Mouth: 'Frown', Blush: 'VeryHigh' },
+        ];
+        try {
+            localStorage.setItem('PEX_sounds', JSON.stringify({ drink: ['http://old-drink.mp3'] }));
+            fakePlayer.ExtensionSettings.PEX = LZString.compressToBase64(JSON.stringify({
+                ts: Date.now(), v: 1, enabled: true, keywords: ['人格药水'], normalKeywords: ['凝胶药剂'],
+                waitSeconds: 30, expressions: oldExprs,
+            }));
+        } catch (e) {}
+        try { window.PEX.reload(); } catch (e) {}
+        cfg = window.PEX.getConfig();
+        const migratedWait = cfg.sounds.wait || [];
+        const migratedExpr = cfg.expressions || {};
+        check('旧存档迁移：drink 并入 wait', migratedWait.some(u => u === 'http://old-drink.mp3'), 'wait 数=' + migratedWait.length);
+        check('旧存档迁移：expressions 数组 → wait 池 2 组 + excrete + blank',
+            Array.isArray(migratedExpr.wait) && migratedExpr.wait.length === 2
+            && migratedExpr.excrete?.Eyes === 'LewdHeartPink' && migratedExpr.blank?.Eyes === 'Dazed',
+            'wait=' + (Array.isArray(migratedExpr.wait) ? migratedExpr.wait.length : '?'));
+        // 16f2. 音效空数组存档不再覆盖默认（旧存档 {wait:[],excrete:[],feed:[]} → 仍回默认 CDN）
+        try { localStorage.setItem('PEX_sounds', JSON.stringify({ sounds: { wait: [], excrete: [], feed: [] } })); } catch (e) {}
+        try { window.PEX.reload(); } catch (e) {}
+        cfg = window.PEX.getConfig();
+        check('空数组存档回默认音效（排出/放回恢复）',
+            (cfg.sounds.wait || []).length === 5 && (cfg.sounds.excrete || []).length === 1
+            && (cfg.sounds.feed || []).length === 1,
+            'wait=' + (cfg.sounds.wait || []).length + ' excrete=' + (cfg.sounds.excrete || []).length + ' feed=' + (cfg.sounds.feed || []).length);
+        // 还原：清掉迁移产物（存档 + 备份一起清，防 loadSettings 把备份补回账号）
+        try { localStorage.removeItem('PEX_sounds'); } catch (e) {}
+        try { localStorage.removeItem('PEX_settings_backup_12345'); } catch (e) {}
+        delete fakePlayer.ExtensionSettings.PEX;
+        try { window.PEX.reload(); } catch (e) {}
+        cfg = window.PEX.getConfig();
+        cfg.sounds = { wait: defSounds, excrete: [], feed: [] };
+        configDefaultsTest();
+                }, 300000);   // 16e2 音量轮询
+            }, 300);          // 16e 自己的消息等待
+        }, 300000);           // 16e 播放轮询
+    }
+
+    // 测试用：等待段数与段位置（与插件同公式）
+    function waitFxSegment(sec) { return Math.max(1, Math.min(5, Math.floor((sec || 0) / 10))); }
+    function waitFxTimes(waitMs, n) {
+        const out = [];
+        for (let k = 1; k <= n; k++) out.push(waitMs * k / (n + 1));
+        return out;
+    }
+
+    function configDefaultsTest() {
+        // 17. 关键词默认（先清本地旧存档 + 账号存档再重载，保证走默认值）
+        try { localStorage.removeItem('PEX_settings_backup_12345'); } catch (e) {}
+        delete fakePlayer.ExtensionSettings.PEX;
+        try { window.PEX.reload(); } catch (e) {}
+        const cfg = window.PEX.getConfig();
+        const kw = cfg.keywords || [];
+        const nkw = cfg.normalKeywords || [];
+        check('人格凝胶关键词默认 4 个',
+            kw.length === 4 && kw.includes('人格药水') && kw.includes('人格药剂')
+            && kw.includes('persona potion') && kw.includes('personality extraction'),
+            JSON.stringify(kw));
+        check('普通凝胶关键词默认 4 个',
+            nkw.length === 4 && nkw.includes('凝胶药剂') && nkw.includes('凝胶药水')
+            && nkw.includes('plain gel') && nkw.includes('normal gel'),
+            JSON.stringify(nkw));
+        remoteEditTests();
+    }
+
+    function remoteEditTests() {
+        // 14. 远程修改：按钮位置 / 权限实时缓存救活 / 打开面板 / 查看与应用播报
+        const origDB = window.DrawButton;
+        let dbArgs = null;
+        window.DrawButton = (...a) => { dbArgs = a; origDB(...a); };
+        const origSend = window.ServerSend;
+        window.__sendLog = [];
+        window.ServerSend = (cmd, data) => { window.__sendLog.push({ cmd, data }); origSend(cmd, data); };
+        window.InformationSheetSelection = fakeOther;   // 资料页目标
+        // 对方公告：白名单模式但我不在名单（OSS 快照 → 无权限）——模拟房间同步的过时快照
+        fakeOther.OnlineSharedSettings.PEX = {
+            state: null, edit: true,
+            editModes: { time: 'whitelist', autoRevert: 'whitelist', timerVisibility: 'whitelist' },
+            wl: [],
+        };
+        window.__hooks['InformationSheetRun']([], () => {});
+        // 14a. 按钮框显示（位置+Label=REX 字母占位）+ 查询发出 + 过时快照下按钮禁用
+        //（PEX_PermQuery 走限速队列，后台标签节流下延迟不定 → 轮询）
+        waitUntil(() => (window.__sendLog || []).some(x => x.data?.Content === 'PEX_PermQuery'), (queryOk) => {
+            const btnOk = dbArgs && dbArgs[0] === 1715 && dbArgs[1] === 175;
+            const btnLabel = dbArgs && dbArgs[4];
+            const querySent = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_PermQuery');
+            check('远程按钮在资料页按钮下方 (1715,175)', btnOk, 'x=' + dbArgs?.[0] + ' y=' + dbArgs?.[1]);
+            check('按钮框显示（中间 REX 字母占位）', btnLabel === 'REX', 'Label=' + btnLabel);
+            check('看资料页时权限查询发出', querySent, querySent ? '✅' : '❌');
+            check('过时快照（白名单未同步）按钮禁用', dbArgs?.[8] === true, 'disabled=' + dbArgs?.[8]);
+            // 14b. PEX_PermReply → 缓存 → 按钮被"救活"；点击 → 访问通知 + 面板
+            window.__hooks['ChatRoomMessage']([{
+                Type: 'Hidden', Content: 'PEX_PermReply', Sender: 99999,
+                Dictionary: [
+                    { Tag: 'PEX_PermReply', Target: '12345' },
+                    { Tag: 'Perms', Value: { time: true, autoRevert: true, timerVisibility: true } },
+                    { Tag: 'Values', Value: { waitSeconds: 30, blockedWaitMinutes: 15, autoRevertMinutes: 15, autoRevertEnabled: true, timerVisibility: 'all' } },
+                ],
+            }], () => {});
+            dbArgs = null;
+            window.__hooks['InformationSheetRun']([], () => {});
+            check('权限实时回复后按钮可用', dbArgs?.[8] === false, 'disabled=' + dbArgs?.[8]);
+            window.__sendLog = [];
+            window.MouseX = 1730; window.MouseY = 200;
+            window.__hooks['InformationSheetClick']([], () => {});
+            waitUntil(() => (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Access'), (accessOk) => {
+                const accessSent = (window.__sendLog || []).some(x => x.data?.Content === 'PEX_Access');
+                const panelEl = document.getElementById('pex-remote-panel');
+                const panelShown = !!panelEl && panelEl.style.display !== 'none';
+                check('打开面板发送访问通知', accessSent, accessSent ? '✅' : '❌');
+                check('远程编辑面板打开', panelShown, panelShown ? '✅' : '❌');
+                // 退出资料页 → 面板自动关闭（曾因 showPanel 未置 R.open → 永远关不掉）
+                try { window.__hooks['InformationSheetExit']([], () => {}); } catch (e) {}
+                const panelGone = !document.getElementById('pex-remote-panel') || document.getElementById('pex-remote-panel').style.display === 'none';
+                check('退出资料页面板自动关闭', panelGone, panelGone ? '✅' : '❌');
+                // 14c. 查看播报接收：对方收到 PEX_Access → 本地聊天显示
+                window.__hooks['ChatRoomMessage']([{
+                    Type: 'Hidden', Content: 'PEX_Access', Sender: 99999,
+                    Dictionary: [{ Tag: 'PEX_Access', Target: '12345' }, { Tag: 'Name', Value: '某人' }],
+                }], () => {});
+                const log1 = document.getElementById('TextAreaChatLog').innerText;
+                check('查看资料播报', log1.includes('查看了你的 PEX 设置'), log1.slice(-60));
+                // 14d. 对方应用修改 → 播报 + 配置生效（默认权限仅自己 → 先临时放开 time 权限）
+                window.PEX.getConfig().editModes = { time: 'any', autoRevert: 'any', timerVisibility: 'any' };
+                window.__hooks['ChatRoomMessage']([{
+                    Type: 'Hidden', Content: 'PEX_RemoteSet', Sender: 99999,
+                    Dictionary: [{ Tag: 'PEX_RemoteSet', Target: '12345' }, { Tag: 'Values', Value: { waitSeconds: 45 } }],
+                }], () => {});
+                const log2 = document.getElementById('TextAreaChatLog').innerText;
+                const cfgAfter = window.PEX.getConfig().waitSeconds;
+                check('被远程修改播报 + 配置生效', log2.includes('修改了你的 PEX 设置') && cfgAfter === 45,
+                    'waitSeconds=' + cfgAfter);
+                window.PEX.getConfig().editModes = { time: 'off', autoRevert: 'off', timerVisibility: 'off' };
+                try { window.__hooks['InformationSheetExit']([], () => {}); } catch (e) {}   // 关面板
+                window.DrawButton = origDB;
+                window.ServerSend = origSend;
+                window.InformationSheetSelection = null;
+                window.MouseX = 0; window.MouseY = 0;
+                settingsSmoke();
+                finalSummary();
+            }, 300000);
+        }, 300000);
+    }
+
+    // ── 设置页（DOM 面板 7 分区）每个分区实测 ──
+    function settingsSmoke() {
+        try {
+            const scr = window.__prefScreen;
+            if (!scr) { check('设置页存在', false); return; }
+            scr.load();
+            scr.run();
+            const panel = document.getElementById('pex-settings-panel');
+            check('设置面板打开', !!panel, panel ? '✅' : '❌');
+            const secBtns = panel ? panel.querySelectorAll('[data-pex-sec]') : [];
+            check('设置面板 7 分区', secBtns.length === 7, '分区数=' + secBtns.length);
+            for (let i = 0; i < secBtns.length; i++) {
+                secBtns[i].click();
+                scr.run();
+            }
+            check('7 分区切换渲染无异常', true);
+            // 基本设置：启用开关（左右两钮，点"关"）
+            secBtns[0].click(); scr.run();
+            const tglEnabled = panel.querySelector('[data-pex-side="enabled"][data-pex-val="0"]');
+            if (tglEnabled) tglEnabled.click();
+            check('基本设置启用开关生效', window.PEX.getConfig().enabled === false, 'enabled=' + window.PEX.getConfig().enabled);
+            window.PEX.getConfig().enabled = true;
+            // 排出设置：失神限制开关 + 等待秒数最低 10
+            secBtns[1].click(); scr.run();
+            const numWait = panel.querySelector('[data-pex-number="waitSeconds"]');
+            check('排出前等待最低 10 秒', !!numWait && numWait.min === '10', numWait ? ('min=' + numWait.min) : '❌');
+            const tglRestr = panel.querySelector('[data-pex-side="restrictions"][data-pex-val="0"]');
+            if (tglRestr) tglRestr.click();
+            check('排出设置失神限制开关生效', window.PEX.getConfig().restrictions === false, 'restrictions=' + window.PEX.getConfig().restrictions);
+            window.PEX.getConfig().restrictions = true;
+            // 特效设置：黑白开关 + 其他玩家音效开关（默认关）+ 计时器可见性下拉 + 凝胶图层控件
+            secBtns[2].click(); scr.run();
+            const tglBlank = panel.querySelector('[data-pex-side="fxBlank"][data-pex-val="0"]');
+            if (tglBlank) tglBlank.click();
+            check('特效设置黑白开关生效', window.PEX.getConfig().fxBlank === false, 'fxBlank=' + window.PEX.getConfig().fxBlank);
+            window.PEX.getConfig().fxBlank = true;
+            const tglHear = panel.querySelector('[data-pex-side="hearRemoteSounds"]');
+            check('其他玩家音效开关（默认关）', !!tglHear && !!panel.querySelector('[data-pex-side="hearRemoteSounds"][data-pex-val="0"].on'), '✅');
+            const numLayer = panel.querySelector('[data-pex-number="gelLayer"]');
+            check('凝胶图层控件（0~99）', !!numLayer && numLayer.min === '0' && numLayer.max === '99',
+                numLayer ? ('min=' + numLayer.min + ' max=' + numLayer.max) : '❌');
+            const selVis = panel.querySelector('[data-pex-select="timerVisibility"]');
+            if (selVis) { selVis.value = 'others'; selVis.dispatchEvent(new Event('change', { bubbles: true })); }
+            check('特效设置计时器可见性生效', window.PEX.getConfig().timerVisibility === 'others', 'timerVisibility=' + window.PEX.getConfig().timerVisibility);
+            window.PEX.getConfig().timerVisibility = 'all';
+            // 权限设置：默认仅自己 + 切换所有人生效
+            secBtns[3].click(); scr.run();
+            const em = window.PEX.getConfig().editModes;
+            check('权限设置默认仅自己', em.time === 'off' && em.autoRevert === 'off' && em.timerVisibility === 'off', JSON.stringify(em));
+            const btnAny = panel.querySelector('[data-pex-mode="time"][data-pex-mv="any"]');
+            if (btnAny) btnAny.click();
+            check('权限设置切换所有人生效', window.PEX.getConfig().editModes.time === 'any', 'time=' + window.PEX.getConfig().editModes.time);
+            window.PEX.getConfig().editModes.time = 'off';
+            // 表情设置：渲染 + 等待池新增/删除 + 预览框 + 切换刷新
+            secBtns[4].click(); scr.run();
+            const exprSel = panel.querySelector('[data-pex-select="expressions.blank.Eyes"]');
+            if (exprSel) { exprSel.value = 'Closed'; exprSel.dispatchEvent(new Event('change', { bubbles: true })); }
+            check('表情设置渲染（等待池 + 新增按钮）',
+                !!panel.querySelector('[data-pex-select^="expressions.wait.0"]') && !!panel.querySelector('[data-pex-add-expr]'), '✅');
+            check('表情预览框', !!panel.querySelector('#pex-expr-preview'), '✅');
+            if (exprSel) { exprSel.value = 'Dazed'; exprSel.dispatchEvent(new Event('change', { bubbles: true })); }
+            // 等待表情：新增一组 → 删除（弹窗二次确认）
+            const addExprBtn = panel.querySelector('[data-pex-add-expr]');
+            if (addExprBtn) addExprBtn.click();
+            const poolAfterAdd = (window.PEX.getConfig().expressions.wait || []).length;
+            check('等待表情新增一组', poolAfterAdd === 3, '池数=' + poolAfterAdd);
+            const delExprBtn = panel.querySelector('[data-pex-del-expr="2"]');
+            if (delExprBtn) delExprBtn.click();
+            const dlgExpr = document.querySelector('.pex-confirm-dialog');
+            if (dlgExpr) { const yes = dlgExpr.querySelector('.yes'); if (yes) yes.click(); }
+            check('等待表情删除（弹窗确认）', (window.PEX.getConfig().expressions.wait || []).length === 2,
+                '池数=' + (window.PEX.getConfig().expressions.wait || []).length);
+            // 音效设置：3 类各带左右开关
+            secBtns[5].click(); scr.run();
+            check('音效设置渲染（3 类带开关）',
+                !!panel.querySelector('[data-pex-sound="wait"]') && !!panel.querySelector('[data-pex-sound="excrete"]')
+                && !!panel.querySelector('[data-pex-sound="feed"]')
+                && !!panel.querySelector('[data-pex-side="soundOn.wait"]')
+                && !!panel.querySelector('[data-pex-side="soundOn.excrete"]')
+                && !!panel.querySelector('[data-pex-side="soundOn.feed"]'), '✅');
+            const tglSndWait = panel.querySelector('[data-pex-side="soundOn.wait"][data-pex-val="0"]');
+            if (tglSndWait) tglSndWait.click();
+            check('音效设置等待开关生效', window.PEX.getConfig().soundOn.wait === false,
+                'wait=' + window.PEX.getConfig().soundOn.wait);
+            window.PEX.getConfig().soundOn.wait = true;
+            // 关于：恢复默认弹窗二次确认
+            secBtns[6].click(); scr.run();
+            const btnReset = panel.querySelector('[data-pex-action="reset"]');
+            if (btnReset) btnReset.click();
+            const dlg1 = document.querySelector('.pex-confirm-dialog');
+            check('恢复默认弹窗出现', !!dlg1, dlg1 ? '✅' : '❌');
+            if (dlg1) { const yes = dlg1.querySelector('.yes'); if (yes) yes.click(); }
+            // 基本设置：强制恢复弹窗（取消）
+            secBtns[0].click(); scr.run();
+            const btnRecover = panel.querySelector('[data-pex-action="recover"]');
+            if (btnRecover) btnRecover.click();
+            const dlg2 = document.querySelector('.pex-confirm-dialog');
+            check('强制恢复弹窗出现', !!dlg2, dlg2 ? '✅' : '❌');
+            if (dlg2) { const no = dlg2.querySelector('.no'); if (no) no.click(); }
+            // 关闭清理
+            scr.exit();
+            check('设置面板关闭清理', !document.getElementById('pex-settings-panel') || document.getElementById('pex-settings-panel').style.display === 'none', '✅');
+            // 点 ✕ 关闭 → 再打开 → 面板重建出现（回归：曾因 display:none 残留导致再打开空白）
+            scr.run();
+            const closeBtn = panel.querySelector('[data-pex-close]');
+            if (closeBtn) closeBtn.click();
+            const gone = !document.getElementById('pex-settings-panel');
+            scr.run();
+            const panel2 = document.getElementById('pex-settings-panel');
+            check('点 ✕ 再打开面板重建', gone && !!panel2, (gone ? '关闭✅ ' : '关闭❌ ') + (panel2 ? '重开✅' : '重开❌'));
+            scr.exit();
+        } catch (e) {
+            check('设置页渲染异常', false, e.message);
+        }
+        // /pex show 控制台面板开关
+        try {
+            const cmd = window.__commands && window.__commands.find(c => c.Tag === 'pex');
+            if (cmd) {
+                cmd.Action('show');
+                const hasPanel = !!document.getElementById('pex-panel');
+                cmd.Action('show');
+                const closedPanel = !document.getElementById('pex-panel');
+                check('/pex show 面板开关', hasPanel && closedPanel, (hasPanel ? '开✅' : '开❌') + (closedPanel ? '关✅' : '关❌'));
+            } else {
+                check('/pex show 面板', false, 'CommandCombine 未注册');
+            }
+        } catch (e) {
+            check('/pex show 面板', false, e.message);
+        }
+    }
+
+    function finalSummary() {
+        const s = window.PEX.status();
+        check('最终恢复', s.includes('正常'), s);
+        L('info', '══════ 测试结束 ══════');
+        const failed = results.filter(r => !r.ok).length;
+        L(failed ? 'bad' : 'ok', failed ? `共 ${results.length} 项，${failed} 项失败` : `全部 ${results.length} 项通过 ✅`);
+    }
+}
+</script>
+</body>
+</html>
