@@ -6,7 +6,7 @@
 //  抗断连：时间戳取新 + 载入前禁存 + 存前校验 + unload flush
 // ════════════════════════════════════════
 
-import { CONFIG, ES_KEY, MOD_VER, makeDefaultConfig, setConfig } from './config.js';
+import { CONFIG, ES_KEY, ES_BUDGET, MOD_VER, makeDefaultConfig, setConfig } from './config.js';
 import { ui } from '../expansion/i18n.js';
 import { pexSendHidden } from './net.js';
 import { MODE } from '../gameplay/state.js';

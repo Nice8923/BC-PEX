@@ -14,7 +14,7 @@ import { registerMessageHook, registerTextQueryHook } from './net.js';
 import { registerAtmosphereHooks } from '../effects/atmosphere.js';
 import { hookChatInput, printChat, registerCommandOnce } from './commands.js';
 import { hookChatRoomLifecycle, hookUnload } from './hooks.js';
-import { registerGameplay, stopGameplay } from '../gameplay/index.js';
+import { registerGameplay, stopGameplay, clearRoomCaches } from '../gameplay/index.js';
 import { registerPreferenceScreen } from '../ui/settings.js';
 import { registerTimer } from '../ui/timer.js';
 import { registerRemoteEdit } from '../ui/remote.js';
@@ -127,7 +127,7 @@ export async function initialize() {
                     } catch (e) {}
                 }, 1500);
             },
-            () => {}
+            () => { try { clearRoomCaches(); } catch (e) {} }
         );
         hookUnload(() => {
             try { stopGameplay(); } catch (e) {}

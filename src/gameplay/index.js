@@ -64,6 +64,13 @@ export function registerGameplay() {
     }, 1000);
 }
 
+// 离房清理（ChatRoomLeave 调用）：他人的状态/动画缓存只对当前房间有意义。
+// 不清的话换房会看到上一间的残留，而且这两个 Map 会随着一晚上换房无限长大。
+export function clearRoomCaches() {
+    try { clearRemoteAnims(); } catch (e) {}
+    try { clearAllRemoteStates(); } catch (e) {}
+}
+
 // 卸载清理（modApi.onUnload 调用）
 export function stopGameplay() {
     if (_tickTimer) { clearInterval(_tickTimer); _tickTimer = null; }
