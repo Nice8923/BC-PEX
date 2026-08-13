@@ -15,6 +15,7 @@ import { saveSettings, publishSharedSettings } from '../core/storage.js';
 import { printChat } from '../core/commands.js';
 import { ui } from '../expansion/i18n.js';
 import { pexLog, characterNicknameSafe } from '../util/util.js';
+import { whitelistAllows } from '../core/whitelist.js';
 
 const BTN = { x: 1715, y: 175, w: 90, h: 90 };   // 资料页远程修改按钮
 const PANEL_ID = 'pex-remote-panel';
@@ -27,20 +28,20 @@ const CATS = [
 ];
 
 // 我方对目标是否有某类权限（对方公告快照兜底——实时回复到达前先用它）
-function _viewerCanEdit(info, mode) {
+// codeRef = 被授权方本人（被看的角色 C）：白名单里的 $owner/$lover 相对它解析
+function _viewerCanEdit(info, mode, codeRef) {
     if (mode === 'any') return true;
     if (mode === 'whitelist') {
-        const wl = Array.isArray(info?.wl) ? info.wl.map(Number) : [];
-        return wl.includes(Number(Player?.MemberNumber));
+        return whitelistAllows(info?.wl, Player?.MemberNumber, codeRef);
     }
     return false;
 }
-function _viewerPerms(info) {
+function _viewerPerms(info, codeRef) {
     const em = info?.editModes || {};
     return {
-        time: _viewerCanEdit(info, em.time),
-        autoRevert: _viewerCanEdit(info, em.autoRevert),
-        timerVisibility: _viewerCanEdit(info, em.timerVisibility),
+        time: _viewerCanEdit(info, em.time, codeRef),
+        autoRevert: _viewerCanEdit(info, em.autoRevert, codeRef),
+        timerVisibility: _viewerCanEdit(info, em.timerVisibility, codeRef),
     };
 }
 function _canEditAny(perms) {
@@ -68,7 +69,7 @@ function _ensurePerm(num) {
 function _permFor(C, info) {
     const pc = _permCache[C?.MemberNumber];
     if (pc && Date.now() - pc.ts < PERM_TTL) return pc;
-    return { perms: _viewerPerms(info), values: null, ts: Date.now() };
+    return { perms: _viewerPerms(info, C), values: null, ts: Date.now() };
 }
 
 function targetInfo(C) {
@@ -221,7 +222,7 @@ function _doOpenRemoteSettings(C) {
     }
     R.target = C;
     const pc = _permCache[num];
-    R.perms = pc ? pc.perms : _viewerPerms(targetInfo(C));
+    R.perms = pc ? pc.perms : _viewerPerms(targetInfo(C), C);
     R.values = (pc && pc.values) ? pc.values : {};
     showPanel();
 }
@@ -281,8 +282,8 @@ function registerRemoteServer() {
                 const m = (CONFIG.editModes || {})[catKey] || 'off';
                 if (m === 'any') return true;
                 if (m === 'whitelist') {
-                    const wl = (CONFIG.whitelist || []).map(String);
-                    return wl.includes(String(sender));
+                    // 白名单相对【被授权方本人】解析：这里是接收方自己（Player）
+                    return whitelistAllows(CONFIG.whitelist || [], sender, Player);
                 }
                 return false;
             };

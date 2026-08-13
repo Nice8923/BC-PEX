@@ -6,6 +6,7 @@
 
 import { CONFIG, ES_KEY } from '../core/config.js';
 import { getModApi } from '../core/config.js';
+import { whitelistAllows } from '../core/whitelist.js';
 
 // 读角色的 PEX 公告状态
 function readState(C) {
@@ -27,11 +28,11 @@ function shouldDraw(C) {
         if (vis === 'self') return isMe;
         if (vis === 'others') return !isMe;
         if (vis === 'whitelist') {
-            // 仅白名单：自己总能看到自己的；别人要看他在不在被观察者公告的白名单里
+            // 仅白名单：自己总能看到自己的；别人要看他在不在被观察者公告的白名单里。
+            // 白名单相对【被观察者本人】解析：$owner/$lover = 被观察者自己的主人/恋人
             if (isMe) return true;
             const wl = C?.OnlineSharedSettings?.[ES_KEY]?.wl || [];
-            const myNo = Player?.MemberNumber;
-            return wl.includes(String(myNo));
+            return whitelistAllows(wl, Player?.MemberNumber, C);
         }
         return false;
     } catch (e) { return false; }

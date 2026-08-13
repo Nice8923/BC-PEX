@@ -247,7 +247,11 @@ const EXT = {
         content.addEventListener('change', (e) => {
             const t = e.target;
             if (t.dataset.pexSelect) {
-                this._setPath(t.dataset.pexSelect, t.value);
+                // 数值型下拉（特效强度/失神视野）存数字而非字符串，保持类型一致；
+                // 纯数字值才转（其余如计时器可见性、表情名仍为字符串）
+                const raw = t.value;
+                const num = Number(raw);
+                this._setPath(t.dataset.pexSelect, (raw !== '' && /^\d+$/.test(raw) && !isNaN(num)) ? num : raw);
                 // 表情下拉 → 刷新预览（新结构：expressions.wait.N / expressions.excrete / blank）
                 const sel = t.dataset.pexSelect;
                 if (sel.startsWith('expressions.wait.')) {
@@ -336,7 +340,9 @@ const EXT = {
     },
     _sel(key, options, desc) {
         const val = this._getPath(key);
-        return `<select class="pex-sel" data-pex-select="${key}" title="${esc(desc || '')}">${options.map(([v, l]) => `<option value="${v}" ${val === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+        // 用字符串比较判定选中：特效强度/失神视野等数值型下拉，
+        // 旧存档可能存成字符串 "3"，与数字 3 严格比较会全部落空 → 下拉回退到第一项
+        return `<select class="pex-sel" data-pex-select="${key}" title="${esc(desc || '')}">${options.map(([v, l]) => `<option value="${v}" ${String(val) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     },
     _num(key, min, max, desc) {
         return `<input type="number" class="pex-num" data-pex-number="${key}" min="${min}" max="${max}" value="${this._getPath(key)}" title="${esc(desc || '')}">`;
