@@ -12,7 +12,6 @@
 // @run-at       document-end
 // ==/UserScript==
 
-window.PEX = window.PEX ?? {};
 if (window.PEX) {
     console.warn('⚗️[PEX] 已加载，跳过重复导入。');
 } else {

@@ -13,7 +13,6 @@
 // ==/UserScript==
 
 // 薄加载器：从发布地址拉取构建产物（assets/main.js，GitHub Pages）。
-window.PEX = window.PEX ?? {};
 if (window.PEX) {
     console.warn('⚗️[PEX] 已加载，跳过重复导入。');
 } else {
