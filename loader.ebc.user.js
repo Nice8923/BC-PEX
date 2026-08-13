@@ -7,7 +7,7 @@
 // @description:en  PEX local-dev loader for EBC (loads the build from localhost:8000)
 // @author       PEX
 // @supportURL   https://github.com/Nice8923/BC-PEX
-// @include      /^https:\/\/(www\.)?bondage(projects\.elementfx|-(europe|asia))\.com\/.*/
+// @include      /^https?:\/\/(www\.)?(bondageprojects\.com|bondageprojects\.elementfx\.com|bondage-europe\.com|bondage-asia\.com)\/.*/
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
