@@ -7,12 +7,11 @@
 // @description:en  PEX local-dev loader (loads the build from vite preview)
 // @author       PEX
 // @supportURL   https://github.com/Nice8923/BC-PEX
-// @include      /^https:\/\/(www\.)?bondage(projects\.elementfx|-(europe|asia))\.com\/.*/
+// @include      /^https?:\/\/(www\.)?(bondageprojects\.com|bondageprojects\.elementfx\.com|bondage-europe\.com|bondage-asia\.com)\/.*/
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
 
-window.PEX = window.PEX ?? {};
 if (window.PEX) {
     console.warn('⚗️[PEX] 已加载，跳过重复导入。');
 } else {

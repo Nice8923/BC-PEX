@@ -134,8 +134,11 @@ function tryRegisterCommand() {
     return false;
 }
 
-// 策略3：keydown Enter 兜底
+// 策略3：keydown Enter 兜底（单例守卫：core-init 顶层 hookChatInput 与进房后 registerCommandOnce 都会调它，避免重复挂监听导致 /pex 触发两次）
+let _keyDownHooked = false;
 function setupKeydownFallback() {
+    if (_keyDownHooked) return;
+    _keyDownHooked = true;
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
         const input = document.getElementById('InputChat') || document.querySelector('textarea[id*="Chat"]');
