@@ -57,12 +57,17 @@ export function startFlow(gelType) {
         if (CONFIG.fxDizzy) startDizzy(waitMs, CONFIG.effectLevel);
         scheduleWaitFx(() => my === _flowId, waitMs);
     }
+    // expiresAt 是绝对时间戳：即时收到的人和晚进房读 OSS 的人用同一个字段各自算剩余秒数，
+    // 不需要重播倒数，也不需要为"晚进房"另做一套机制
+    // ponytail: 绝对时间戳吃客户端时钟偏移（收端时钟偏几秒倒数就偏几秒）。
+    //   相对秒数不吃偏移但对"晚进房读 OSS"无效（不知道那个值是多久前写的），
+    //   要两者兼顾只能等 BC 给服务器时钟。浏览器普遍 NTP 同步，差几秒是纯视觉问题。
     publishState({
         mode: MODE.WAITING,
         type: gelType,
-        remainingSec: Math.ceil(waitMs / 1000),
+        expiresAt: PEX_STATE.phaseEndsAt,
         owner: Player?.MemberNumber,
-    }, true);
+    });
     pexSendAction(gelType === 'persona'
         ? '%NAME%喝下了什么奇怪的东西，一阵异样的感觉涌了上来…'
         : '%NAME%喝下了什么黏糊糊的东西…');
@@ -80,9 +85,9 @@ export function attemptExcrete() {
         publishState({
             mode: MODE.BLOCKED,
             type: PEX_STATE.gelType,
-            remainingSec: Math.ceil(endMs / 1000),
+            expiresAt: PEX_STATE.phaseEndsAt,
             owner: Player?.MemberNumber,
-        }, true);
+        });
         pexSendAction('%NAME%的臀部被什么东西挡住了，凝胶堵在里面出不来…');
         return;
     }
@@ -106,7 +111,7 @@ async function excreteNow() {
     broadcastSound('excrete', excreteUrl);
     // startedAt 供远程去重：同一个排出动作只播一次动画（防"播了 2 遍"）
     const excreteStartedAt = Date.now();
-    publishState({ mode: MODE.EXCRETING, type: PEX_STATE.gelType, owner: Player?.MemberNumber, startedAt: excreteStartedAt }, true);
+    publishState({ mode: MODE.EXCRETING, type: PEX_STATE.gelType, owner: Player?.MemberNumber, startedAt: excreteStartedAt });
     // 排出动画（白色方块 4 帧占位，正式素材后换）；时长对齐排出音效：
     // 动画结束（进黑白）正好排出音效播完——探测实际音效时长，短于默认用默认
     await playExcreteAnimation(excreteUrl);
@@ -131,12 +136,11 @@ async function excreteNow() {
         publishState({
             mode: MODE.BLANK,
             type: 'normal',
-            remainingSec: autoSec ? Math.ceil(autoSec / 1000) : 0,
             owner: Player?.MemberNumber,
             gelId,
             gelHolder: null,
-            expiresAt: autoSec ? Date.now() + autoSec : 0,
-        }, true);
+            expiresAt: PEX_STATE.phaseEndsAt,
+        });
         pexSendAction('%NAME%排出了一坨软趴趴的普通凝胶，落在脚边…');
         return;
     }
@@ -163,12 +167,11 @@ async function excreteNow() {
     publishState({
         mode: MODE.BLANK,
         type: 'persona',
-        remainingSec: autoSec ? Math.ceil(autoSec / 1000) : 0,
         owner: Player?.MemberNumber,
         gelId,
         gelHolder: null,
-        expiresAt: autoSec ? Date.now() + autoSec : 0,
-    }, true);
+        expiresAt: PEX_STATE.phaseEndsAt,
+    });
     pexSendAction('%NAME%的身体一阵脱力，瘫坐下来眼神空洞——人格凝胶被排了出来，落在脚边…');
 }
 
@@ -183,7 +186,7 @@ export function cancelFlow(silent = true) {
     setSpeechBlock(false);
     setBodyBlock(false);
     setMode(MODE.IDLE);
-    publishState(null, true);
+    publishState(null);
     if (!silent) pexSendAction('%NAME%恢复了正常。');
 }
 
@@ -201,7 +204,7 @@ export function recoverPersona(announce, onFaded) {
     setSpeechBlock(false);
     setBodyBlock(false);
     setMode(MODE.IDLE);
-    publishState(null, true);
+    publishState(null);
     // 黑白/暗角淡出（0.8s）；"放回"音效在淡出完成后由调用方通过 onFaded 播放
     fadeOutBlankView(RECOVER_FADE_MS, onFaded);
     if (announce) pexSendAction(announce);
@@ -265,27 +268,12 @@ export function tick(now) {
     }
 }
 
-// 定时公告（5 秒量化，减少消息量；由 index.js 调用）
+// 手持凝胶过期兜底（任何模式都跑；由 index.js 每秒调用）：
+// 持有者没收到到期广播时（跨房间/离线重进），用物品上同一个 expiresAt
+// （= 主人恢复时刻）按设置无效化或移除。
+// 这里曾经还每 5 秒重播一次倒数状态 —— 已删：剩余秒数收端用 expiresAt 自己算。
 export function publishTick() {
-    // 手持凝胶过期兜底（任何模式都跑）：持有者没收到到期广播时（跨房间/离线重进），
-    // 用物品上同一个 expiresAt（= 主人恢复时刻）按设置无效化或移除
     try { checkHeldGelExpired(); } catch (e) {}
-    const s = PEX_STATE;
-    if (s.mode === MODE.WAITING || s.mode === MODE.BLOCKED || s.mode === MODE.BLANK) {
-        if (s.phaseEndsAt > 0 || s.mode === MODE.BLANK) {
-            const rem = s.phaseEndsAt > 0 ? Math.max(0, Math.round((s.phaseEndsAt - Date.now()) / 1000)) : 0;
-            const bucket = Math.ceil(rem / 5) * 5;
-            publishState({
-                mode: s.mode,
-                type: s.gelType,
-                remainingSec: bucket,
-                owner: s.ownerMemberNumber ?? Player?.MemberNumber,
-                gelId: s.gelId,
-                gelHolder: s.gelHolder,
-                expiresAt: s.phaseEndsAt || 0,
-            });
-        }
-    }
 }
 
 // ── 排出动画（白色方块 4 帧，画进角色画布的身体层——会被衣服遮住）──
@@ -305,10 +293,12 @@ export function getAnimDuration() { return _animOverride > 0 ? _animOverride : _
 export function setAnimDurationOverride(ms) { _animOverride = ms > 0 ? ms : 0; }
 
 // 开始动画（本地与远程共用：记录角色成员号 + 开始时间）
-export function startExcreteAnim(C) {
+// startedAt：远程用对方广播的时间戳对齐进度（中途才看到的人接上正在播的那一段，
+//   而不是从头重播）；本地不传 = 现在开始
+export function startExcreteAnim(C, startedAt) {
     try {
         if (!C || C.MemberNumber == null) return;
-        _canvasAnims.set(C.MemberNumber, Date.now());
+        _canvasAnims.set(C.MemberNumber, startedAt > 0 ? startedAt : Date.now());
     } catch (e) {}
 }
 
@@ -369,10 +359,15 @@ export function restoreStateFromPublished() {
             }
             pexLog('登录还原：失神状态（凝胶 ' + (saved.gelId || '无') + '）');
         } else if (saved.mode === MODE.WAITING || saved.mode === MODE.BLOCKED) {
-            const remainMs = Math.max(1, saved.remainingSec || 30) * 1000;
-            setMode(saved.mode, { gelType: saved.type || 'persona', endsAt: Date.now() + remainMs });
+            // 用绝对 expiresAt 续跑（旧存档没有 expiresAt 的退回 remainingSec）
+            const endsAt = saved.expiresAt > 0
+                ? saved.expiresAt
+                : Date.now() + Math.max(1, saved.remainingSec || 30) * 1000;
+            const remainMs = endsAt - Date.now();
+            if (remainMs <= 0) return;   // 已经过期：不还原（tick 会立刻推进，没意义）
+            setMode(saved.mode, { gelType: saved.type || 'persona', endsAt });
             if (saved.mode === MODE.WAITING) startDizzy(remainMs, CONFIG.effectLevel);
-            pexLog('登录还原：' + saved.mode + '（剩余 ' + (saved.remainingSec || '?') + ' 秒）');
+            pexLog('登录还原：' + saved.mode + '（剩余 ' + Math.round(remainMs / 1000) + ' 秒）');
         }
     } catch (e) {
         pexLog('登录还原失败:', e.message);

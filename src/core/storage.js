@@ -6,9 +6,10 @@
 //  抗断连：时间戳取新 + 载入前禁存 + 存前校验 + unload flush
 // ════════════════════════════════════════
 
-import { CONFIG, ES_KEY, MOD_VER, makeDefaultConfig, setConfig } from './config.js';
+import { CONFIG, ES_KEY, ES_BUDGET, MOD_VER, makeDefaultConfig, setConfig } from './config.js';
 import { ui } from '../expansion/i18n.js';
 import { pexSendHidden } from './net.js';
+import { MODE } from '../gameplay/state.js';
 
 // 深合并：以 defaults 为底，用 saved 覆盖（数组直接替换）
 export function mergeDefaults(defaults, saved) {
@@ -248,44 +249,33 @@ export function saveSettings(immediate = false) {
 }
 
 // ── 对外公告（OnlineSharedSettings）：版本 + 状态 + 权限 ──
-let _statePubTimer = null;
-let _statePubKey = '';
 
-// 公告运行时状态（等待/失神/凝胶等；节流：实质变化才发，至少间隔 1 秒）
-// payload: { mode, remainingSec, owner, gelOwner } —— 供他人头上计时器/状态显示
-// 双通道：
-//   1. OnlineSharedSettings —— 账号级持久化（进房快照/断线恢复用；BC 服务器房间同步有延迟）
-//   2. Hidden 消息 PEX_StateSync —— 实时广播给房间（别人立刻读到我的状态：
-//      捡起按钮/远程凝胶/远程动画/头顶倒计时全部实时，不依赖服务器延迟）
-export function publishState(payload, immediate = false) {
+// 公告运行时状态（等待/阻挡/排出/失神/凝胶易主）。
+// ⚠️ 只在【状态转换】时调用 —— 没有倒数心跳。
+//   剩余秒数由收端用 expiresAt 本地推算（ui/timer.js），重播倒数是纯浪费：
+//   旧版每 5 秒送一次，一轮 15 分钟的失神光心跳就是 360 个封包，而收端根本没读 remainingSec。
+// 双通道，同一份 payload（payload 才 100 多字节，比"发个空 ping 叫大家重读 OSS"划算：
+//   ping 一定比 OSS 早到，早到的时候重读只会读到旧值）：
+//   1. OnlineSharedSettings —— 持久。晚进房的人在 ChatRoomSync 拿全房角色资料时免费带到。
+//      不加 Force：让 BC 自己的 2 秒窗口合并连续变化（Server.js:126），Force=true 等于
+//      主动关掉 BC 已经做好的合并
+//   2. Hidden PEX_StateSync —— 即时。服务器扇出 OSS 有延迟，房内的人靠这条立刻看到
+// seq：单调时间戳，收端用它挡"旧的盖新的"（见 gameplay/state.js）
+export function publishState(payload) {
     try {
         if (!Player || !Player.OnlineSharedSettings) return;
         if (!Player.OnlineSharedSettings[ES_KEY]) Player.OnlineSharedSettings[ES_KEY] = {};
-        const key = JSON.stringify(payload);
-        if (key === _statePubKey && !immediate) return;
-        _statePubKey = key;
-        const push = () => {
-            // 附上计时器可见性：别人画我的倒计时时读这个（对方设"仅自己"→ 别人不画）
-            const pub = Object.assign({}, payload);
-            if (pub.timerVisibility === undefined) pub.timerVisibility = CONFIG.timerVisibility || 'both';
-            Player.OnlineSharedSettings[ES_KEY].state = pub;
-            if (typeof ServerAccountUpdate?.QueueData === 'function') {
-                ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings }, true);
-            }
-            // 实时通道：Hidden 广播（自己的状态在房间所有人客户端上立即刷新）
-            try {
-                pexSendHidden('PEX_StateSync', [{ Tag: 'Payload', Value: JSON.stringify(pub) }], {
-                    // gelHolder 也进去重键：凝胶被捡起/放回时持有者变化必须广播（凝胶唯一性）
-                    dedupeKey: 'state:' + (payload?.mode || '') + ':' + (payload?.remainingSec || 0) + ':' + (payload?.gelHolder ?? ''),
-                    dedupeMs: 4000,
-                });
-            } catch (e) {}
-        };
-        if (immediate) { if (_statePubTimer) { clearTimeout(_statePubTimer); _statePubTimer = null; } push(); }
-        else {
-            if (_statePubTimer) clearTimeout(_statePubTimer);
-            _statePubTimer = setTimeout(() => { _statePubTimer = null; push(); }, 1000);
+        const pub = Object.assign({ mode: MODE.IDLE }, payload || null);
+        pub.seq = Date.now();
+        // 附上计时器可见性：别人画我的倒计时时读这个（对方设"仅自己"→ 别人不画）
+        if (pub.timerVisibility === undefined) pub.timerVisibility = CONFIG.timerVisibility || 'all';
+        Player.OnlineSharedSettings[ES_KEY].state = pub;
+        if (typeof ServerAccountUpdate?.QueueData === 'function') {
+            ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings });
         }
+        try {
+            pexSendHidden('PEX_StateSync', [{ Tag: 'Payload', Value: JSON.stringify(pub) }]);
+        } catch (e) {}
     } catch (e) {}
 }
 
@@ -311,8 +301,9 @@ export function publishSharedSettings(immediate = false) {
                 // 无条件广播白名单：计时器"仅白名单可见"档需要读它（只在有 whitelist 权限模式才广播的话拿不到）
                 wl: Array.from(CONFIG.whitelist || []),
             };
+            // 不加 Force：连续改设置由 BC 的 2 秒窗口合并成一发
             if (typeof ServerAccountUpdate?.QueueData === 'function') {
-                ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings }, true);
+                ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings });
             }
             try {
                 pexSendHidden('PEX_SharedSync', [{

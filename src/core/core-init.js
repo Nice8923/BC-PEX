@@ -14,7 +14,7 @@ import { registerMessageHook, registerTextQueryHook } from './net.js';
 import { registerAtmosphereHooks } from '../effects/atmosphere.js';
 import { hookChatInput, printChat, registerCommandOnce } from './commands.js';
 import { hookChatRoomLifecycle, hookUnload } from './hooks.js';
-import { registerGameplay, stopGameplay } from '../gameplay/index.js';
+import { registerGameplay, stopGameplay, clearRoomCaches } from '../gameplay/index.js';
 import { registerPreferenceScreen } from '../ui/settings.js';
 import { registerTimer } from '../ui/timer.js';
 import { registerRemoteEdit } from '../ui/remote.js';
@@ -117,15 +117,17 @@ export async function initialize() {
                             pexLog('进房还原状态:', PEX_STATE.mode);
                             publishState({
                                 mode: PEX_STATE.mode,
-                                remainingSec: Math.max(0, Math.round((PEX_STATE.phaseEndsAt - Date.now()) / 1000)),
-                                owner: PEX_STATE.ownerMemberNumber,
+                                type: PEX_STATE.gelType,
+                                expiresAt: PEX_STATE.phaseEndsAt,
+                                owner: PEX_STATE.ownerMemberNumber ?? Player?.MemberNumber,
                                 gelId: PEX_STATE.gelId,
-                            }, true);
+                                gelHolder: PEX_STATE.gelHolder,
+                            });
                         }
                     } catch (e) {}
                 }, 1500);
             },
-            () => {}
+            () => { try { clearRoomCaches(); } catch (e) {} }
         );
         hookUnload(() => {
             try { stopGameplay(); } catch (e) {}

@@ -3,19 +3,17 @@
 // ════════════════════════════════════════
 
 import { getModApi } from '../core/config.js';
-import { CONFIG } from '../core/config.js';
 import { registerTrigger, registerLocalActivityHook, registerClickHook } from './trigger.js';
 import { tick, publishTick, recoverPersona } from './excretion.js';
 import { registerSpeechBlockHook, registerBodyBlockHooks } from './state-fx.js';
-import { registerGelMessageHandlers, scanRemoteAnimStates, clearRemoteAnims, registerGelUnderlay } from './gel-item.js';
+import { registerGelMessageHandlers, clearRemoteAnims, registerGelUnderlay } from './gel-item.js';
 import { registerPickup } from './pickup.js';
 import { registerWaitFx, broadcastSound } from './wait-fx.js';
 import { pexLog, playSound } from '../util/util.js';
-import { MODE, PEX_STATE } from './state.js';
+import { MODE, PEX_STATE, clearAllRemoteStates } from './state.js';
 
 let _tickTimer = null;
 let _publishTimer = null;
-let _remoteScanTimer = null;
 
 // 凝胶被喝回/喂回 → 若我是主人且状态中：恢复（人格凝胶恢复意识；普通凝胶只是状态结束）
 // 放回音效时机：恢复时黑白/暗角淡出结束（0.8s）后才播——"黑白特效结束就开始播放回的音频"
@@ -52,7 +50,9 @@ export function registerGameplay() {
     registerWaitFx();                          // 等待音效/表情同步 + 其他玩家音效接收
     registerPickup();
 
-    // 主循环：状态推进（250ms）+ 状态公告（1s）
+    // 主循环：状态推进（250ms，纯本地）+ 手持凝胶过期兜底（1s，纯本地）
+    // 他人排出动画原本还有第三个每秒定时器扫全房 —— 已删，改由 drawGelUnder
+    // 在绘制时判断（零轮询，而且晚进房的人能接上正在播的动画）
     if (_tickTimer) clearInterval(_tickTimer);
     _tickTimer = setInterval(() => {
         try { tick(Date.now()); } catch (e) {}
@@ -62,20 +62,19 @@ export function registerGameplay() {
     _publishTimer = setInterval(() => {
         try { publishTick(); } catch (e) {}
     }, 1000);
+}
 
-    // 跨客户端：扫描他人排出动画（1s；凝胶显示由层 7 伪资产自动处理）
-    if (_remoteScanTimer) clearInterval(_remoteScanTimer);
-    _remoteScanTimer = setInterval(() => {
-        if (CONFIG.seeRemoteAnims) {
-            try { scanRemoteAnimStates(); } catch (e) {}
-        }
-    }, 1000);
+// 离房清理（ChatRoomLeave 调用）：他人的状态/动画缓存只对当前房间有意义。
+// 不清的话换房会看到上一间的残留，而且这两个 Map 会随着一晚上换房无限长大。
+export function clearRoomCaches() {
+    try { clearRemoteAnims(); } catch (e) {}
+    try { clearAllRemoteStates(); } catch (e) {}
 }
 
 // 卸载清理（modApi.onUnload 调用）
 export function stopGameplay() {
     if (_tickTimer) { clearInterval(_tickTimer); _tickTimer = null; }
     if (_publishTimer) { clearInterval(_publishTimer); _publishTimer = null; }
-    if (_remoteScanTimer) { clearInterval(_remoteScanTimer); _remoteScanTimer = null; }
     try { clearRemoteAnims(); } catch (e) {}
+    try { clearAllRemoteStates(); } catch (e) {}
 }

@@ -5,8 +5,8 @@
 //  - 禁言拦截（失神时发言 → 变成 "..."）
 // ════════════════════════════════════════
 
-import { CONFIG, ES_KEY } from '../core/config.js';
 import { pexSendAction } from '../core/net.js';
+import { MODE, readRemoteState } from './state.js';
 
 let _prevExpression = null;
 let _savedEyes = null;
@@ -39,11 +39,35 @@ function expandExpr(exprSet) {
 
 // ── 批量设置表情（性能关键）──
 // 本地：一次写完所有组 → 只重建一次画布。
-// 广播：只广播视觉核心组（SleepState 只发 Eyes+Emoticon）。
-//   原版接收端 ChatRoomSyncExpression 每收到一条就重建一次画布，且每条消息都
-//   携带完整外观包（ServerAppearanceBundle）——组数 × 条数 = 全房间的画布重建数，
-//   所以 Eyebrows/Mouth/Blush/Luzi 只本地生效，不广播。
-const BROADCAST_GROUPS = ['Eyes', 'Eyes2', 'Emoticon'];
+// 广播：一发 ChatRoomCharacterUpdate 取代 N 发 ChatRoomCharacterExpressionUpdate。
+//   BC 的 ChatRoomCharacterExpressionUpdate（ChatRoom.js:3615）每一发都夹带
+//   ServerAppearanceBundle —— 完整外观包，逐件带上 Property（Effect/锁/成员号）与 Craft，
+//   一个被绑住又有订制物品的角色好几 KB，而它只带一个 Group：
+//   改 Eyes + Eyes2 就是同一份外观包送两遍。
+//   LCE 踩过同一颗雷（BC-LCE/src/features/expressions.js:88 原话）：
+//   "若每次都送就是 4 发/秒 → 灌爆 socket、断线重连" —— 炸的不是条数（BC 限速 14 条/1.2 秒），
+//   是每条的体积。ChatRoomCharacterUpdate 同样一份外观包但一发覆盖全部组，
+//   顺带把 Eyebrows/Mouth/Blush 也同步出去（原本只有本地看得到）。
+const EXPR_KEEPALIVE_MS = 1000;   // 广播最短间隔
+let _lastBcastAt = 0;
+let _bcastTimer = null;
+let _selfApplying = false;        // PEX 自己发起的表情写入（放行自己的封锁钩子）
+
+// 前沿立即送 + 节流窗口末尾补送一次（保证最终表情一定送达）。
+// 节流是为了挡住外部高频触发：LCE/WCE 动画引擎每 250ms 重算整张脸、挣扎
+// StruggleMinigameHandleExpression、物品表情 InventoryExpressionTriggerApply、
+// 限时表情到期 TimerInventoryRemove —— 这些都会打到下面那个
+// CharacterSetFacialExpression 钩子上，把失神脸一遍遍重新按回去。
+function broadcastAppearance() {
+    if (_bcastTimer) return;   // 已排队，末尾会送最终状态
+    const wait = EXPR_KEEPALIVE_MS - (Date.now() - _lastBcastAt);
+    if (wait > 0) {
+        _bcastTimer = setTimeout(() => { _bcastTimer = null; broadcastAppearance(); }, wait);
+        return;
+    }
+    _lastBcastAt = Date.now();
+    try { if (typeof ChatRoomCharacterUpdate === 'function') ChatRoomCharacterUpdate(Player); } catch (e) {}
+}
 
 function setExprBatch(map, broadcast) {
     try {
@@ -64,13 +88,31 @@ function setExprBatch(map, broadcast) {
         }
         if (!changed.length) return;
         try { if (typeof CharacterRefresh === 'function') CharacterRefresh(Player, false, false); } catch (e) {}
-        if (broadcast) {
-            for (const g of changed) {
-                if (!BROADCAST_GROUPS.includes(g)) continue;
-                try { if (typeof ChatRoomCharacterExpressionUpdate === 'function') ChatRoomCharacterExpressionUpdate(Player, g); } catch (e) {}
-            }
-        }
+        if (!broadcast) return;
+        notifyExprMods(map, changed);
+        broadcastAppearance();
     } catch (e) {}
+}
+
+// ── 通知钩子链（互操作，不是广播）──
+// 值已经写进 Property 了，这里再走一趟 BC 原生 CharacterSetFacialExpression：
+//   · 没装动画引擎：BC 本体在 `item.Property.Expression == Expression` 早退
+//     （Character.js:1973）—— 不刷新、不发包，纯零成本
+//   · 装了 LCE/WCE：它们的钩子排在 BC 本体前面，会把这一通登记成 MANUAL 覆写
+//     （BC-LCE/src/features/expressions.js:760），从此引擎不再每 250ms 把脸抢回去
+// 不走这一步的后果就是拉锯战：引擎每 250ms 重算重套 → PEX 的封锁钩子弹回 →
+// 自己画面同 tick 收敛看不太出来，别人看到的是表情抽动，而且这场仗持续整个失神期。
+// 做法同 LCE 自己的 notifyMods（expressions.js:151）。
+function notifyExprMods(map, changed) {
+    if (typeof CharacterSetFacialExpression !== 'function') return;
+    _selfApplying = true;
+    try {
+        for (const g of changed) {
+            // Eyes2 跳过：BC 本体设 Eyes 时会自己递归到 Eyes2（Character.js:1964）
+            if (g === 'Eyes2') continue;
+            try { CharacterSetFacialExpression(Player, g, map[g]); } catch (e) {}
+        }
+    } finally { _selfApplying = false; }
 }
 
 // 应用一组表情（四维逐部位，含左右眼；批量写入 + 单次重建 + 广播）
@@ -161,8 +203,8 @@ export function setBodyBlock(on) {
 let _drawBlinkSaved = null;
 export function lockRemoteBlink(C) {
     try {
-        const st = C?.OnlineSharedSettings?.[ES_KEY]?.state;
-        if (st && st.mode === 'blank' && st.type !== 'normal') {
+        const st = readRemoteState(C);
+        if (st && st.mode === MODE.BLANK && st.type !== 'normal') {
             _drawBlinkSaved = C.BlinkFactor;
             C.BlinkFactor = 999999;
             return true;
@@ -213,18 +255,21 @@ export function registerBodyBlockHooks(modApi) {
             return result;
         });
     } catch (e) {}
-    // 表情 = "改了弹回"：玩家在失神时改表情 → 执行后立即恢复失神表情（目光呆滞）
+    // 表情：失神时【直接吞掉】外部改动，不是"改了弹回"。
+    // 弹回的写法会打拉锯战：BC 本体设 Eyes 时自己递归到 Eyes2（Character.js:1964）
+    // → 一次外部改动触发两次弹回；对方装了动画引擎的话更是每 250ms 抢一轮，
+    // 每一轮都要重新广播 → 别人看到表情抽动，且整个失神期都在发包。
+    // 吞掉则零成本：玩家菜单、物品表情触发（InventoryExpressionTriggerApply）、
+    // 限时表情到期（TimerInventoryRemove）全部当场作废，脸纹丝不动。
+    // 引擎那种绕过本函数直接写 Property 的，由 notifyExprMods 登记 MANUAL 覆写解决。
     try {
         modApi.hookFunction('CharacterSetFacialExpression', 4, (args, next) => {
-            const result = next(args);
+            if (_selfApplying || !_bodyBlock) return next(args);
             try {
                 const C = args && args[0];
-                if (C && typeof C.IsPlayer === 'function' && C.IsPlayer() && _bodyBlock) {
-                    const exprObj = CONFIG.expressions || {};
-                    applyBlankFace(exprObj.blank || exprObj.excrete);
-                }
+                if (C && typeof C.IsPlayer === 'function' && C.IsPlayer()) return;   // 吞掉
             } catch (e) {}
-            return result;
+            return next(args);
         });
     } catch (e) {}
 }
