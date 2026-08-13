@@ -7,21 +7,19 @@
 //    - 点击：DialogActivityClick 拦截，不跑原版 ActivityRun（避免广播未知活动）
 // ════════════════════════════════════════
 
-import { getModApi, ES_KEY } from '../core/config.js';
+import { getModApi } from '../core/config.js';
 import { pexSendAction, pexSendHidden } from '../core/net.js';
 import { spawnGelItem, isGelItem, removeGelFromSelf } from './gel-item.js';
+import { MODE, readRemoteState, patchRemoteState, clearRemoteState } from './state.js';
 import { pexLog, characterNicknameSafe } from '../util/util.js';
 
 const PICKUP_ACTIVITY = 'PEX_PickupGel';
 const PUTBACK_ACTIVITY = 'PEX_PutGel';
 
-// 读取目标的 PEX 公告状态（失神/凝胶）
+// 读取目标的 PEX 状态（失神/凝胶）
 function targetGelState(C) {
-    try {
-        const st = C?.OnlineSharedSettings?.PEX?.state;
-        if (st && st.mode === 'blank' && st.gelId) return st;
-    } catch (e) {}
-    return null;
+    const st = readRemoteState(C);
+    return (st && st.mode === MODE.BLANK && st.gelId) ? st : null;
 }
 
 // "捡起"条件：目标是别人 + 对方失神 + 凝胶在脚边（无人持有）
@@ -79,12 +77,9 @@ function doPickup(C, st) {
             { Tag: 'Holder', Value: String(Player?.MemberNumber) },
             { Tag: 'Owner', Value: String(owner) },
         ]);
-        // 本地立即更新（自己收不到自己的广播——否则"捡起凝胶"动作在本地不消失）
-        try {
-            if (C?.OnlineSharedSettings?.[ES_KEY]?.state) {
-                C.OnlineSharedSettings[ES_KEY].state.gelHolder = Player?.MemberNumber;
-            }
-        } catch (e) {}
+        // 本地立即更新（自己收不到自己的广播——否则"捡起凝胶"动作在本地不消失）。
+        // 走 patchRemoteState：带上新 seq，不会被随后到达的旧 OSS 盖回去（凝胶"又出现"）
+        patchRemoteState(C, { gelHolder: Player?.MemberNumber });
         pexSendAction(`%NAME%捡起了地上的${item.Craft?.Name ?? '凝胶'}，小心地端了起来。`);
     } catch (e) {
         pexLog('捡起失败:', e.message);
@@ -110,11 +105,7 @@ function doPutBack(C, st) {
             { Tag: 'Owner', Value: String(owner) },
         ]);
         // 本地立即清理对方状态（自己收不到自己的广播 → 放回后"捡起/放回"动作立即消失）
-        try {
-            if (C?.OnlineSharedSettings?.[ES_KEY]?.state) {
-                C.OnlineSharedSettings[ES_KEY].state = null;
-            }
-        } catch (e) {}
+        clearRemoteState(C);
         pexSendAction(`%NAME%把凝胶放回了${characterNicknameSafe(C, '对方')}的身体里，${characterNicknameSafe(C, '对方')}慢慢回过神来。`);
     } catch (e) {
         pexLog('放回失败:', e.message);

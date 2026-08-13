@@ -15,7 +15,7 @@ import { getCharacterByNumber } from '../util/geometry.js';
 import { startExcreteAnim, getCanvasAnimEntry, deleteCanvasAnimEntry, getAnimDuration } from './excretion.js';
 import { lockRemoteBlink, unlockRemoteBlink } from './state-fx.js';
 import { CONFIG, ES_KEY } from '../core/config.js';
-import { PEX_STATE } from './state.js';
+import { MODE, PEX_STATE, readRemoteState, applyRemoteState, patchRemoteState, clearRemoteState } from './state.js';
 import { publishState } from '../core/storage.js';
 
 const GEL_ITEM = 'GlassFilled';   // 凝胶容器道具
@@ -177,36 +177,39 @@ export function registerGelUnderlay(modApi) {
 // 绘制：动画帧优先（排出动画也在同一图层），否则静态凝胶（脚边）
 // 屏幕坐标：角色画布 1000 高 → 臀部 Y+525*z、落点（脚）Y+950*z；中心 X+250*z
 //（整体上移 35px：动画最终落到脚的位置，而不是脚下地面）
-// 动画 4 帧按时长（默认 7340ms = 排出音效时长，探测到更长音效时跟随）等比分布：
-//   0-25% 臀部 → 25-50% 45% 高度 → 50-75% 82% + 地面先兆 → 75-100% 落地
+// 动画是纯本地绘制（跑在 DrawCharacter 钩子里，逐帧），不发任何封包 ——
+// 所以提高流畅度是免费的：整段连续插值，不再是 4 段跳。
 function drawGelUnder(C, X, Y, z) {
     try {
+        const st = readRemoteState(C);
+        // 远程排出动画：看到对方进入 excreting 就本地起跑（同一 startedAt 永不重播）。
+        // 挂在绘制里 = 零轮询（原本是每秒扫一次全房 ChatRoomCharacter），
+        // 而且晚进房的人一被绘制就能接上正在播的那一段。
+        if (st && st.mode === MODE.EXCRETING && st.startedAt && CONFIG.seeRemoteAnims
+            && C.MemberNumber !== Player?.MemberNumber
+            && _remoteAnims.get(C.MemberNumber) !== st.startedAt) {
+            _remoteAnims.set(C.MemberNumber, st.startedAt);
+            startExcreteAnim(C, st.startedAt);
+        }
         // 排出动画帧
         const t0 = getCanvasAnimEntry(C.MemberNumber);
         if (t0) {
             const dur = getAnimDuration() || 7340;
-            const elapsed = Date.now() - t0;
+            const elapsed = Math.max(0, Date.now() - t0);   // max: 挡对方时钟偏快
             if (elapsed > dur) { deleteCanvasAnimEntry(C.MemberNumber); return; }
             if (typeof DrawRect !== 'function') return;
             const cx = X + 250 * z;
             const buttY = Y + 525 * z;
             const footY = Y + 950 * z;
             const p = Math.min(1, elapsed / dur);
-            if (p < 0.25) {
-                DrawRect(cx - 14 * z, buttY - 14 * z, 28 * z, 28 * z, '#ffffff');
-            } else if (p < 0.5) {
-                DrawRect(cx - 14 * z, buttY + (footY - buttY) * 0.45 - 14 * z, 28 * z, 28 * z, '#ffffff');
-            } else if (p < 0.75) {
-                DrawRect(cx - 14 * z, buttY + (footY - buttY) * 0.82 - 14 * z, 28 * z, 28 * z, '#ffffff');
-                DrawRect(cx - 18 * z, footY - 8 * z, 36 * z, 16 * z, '#ffffff');
-            } else {
-                DrawRect(cx - 24 * z, footY - 11 * z, 48 * z, 22 * z, '#ffffff');
-            }
+            const y = buttY + (footY - buttY) * p * p;              // p² = 重力加速感
+            const sq = p > 0.9 ? 1 + (p - 0.9) * 6 : 1;             // 落地压扁
+            const w = 28 * z * sq, h = 28 * z / sq;
+            DrawRect(cx - w / 2, y - h / 2, w, h, '#ffffff');
             return;
         }
         // 静态凝胶：失神且凝胶在脚边（被捡走 → gelHolder 有值 → 不画）
-        const st = C.OnlineSharedSettings?.[ES_KEY]?.state;
-        if (st && st.mode === 'blank' && st.gelId && !st.gelHolder) {
+        if (st && st.mode === MODE.BLANK && st.gelId && !st.gelHolder) {
             if (typeof DrawImageResize === 'function') {
                 DrawImageResize('Assets/Female3DCG/ItemHandheld/Preview/GlassFilled.png', X + 250 * z - 20 * z, Y + 950 * z - 17 * z, 40 * z, 34 * z);
             }
@@ -215,29 +218,11 @@ function drawGelUnder(C, X, Y, z) {
 }
 
 // ── 远程排出动画（跨客户端）──
-// 对方进入 excreting（刚排出）→ 在他臀部→地面播动画，所有装 PEX 的都看得到
-const _remoteAnims = new Map();   // memberNumber → startedAt（同一 startedAt 永久去重）
-
-export function scanRemoteAnimStates() {
-    try {
-        if (typeof ChatRoomCharacter === 'undefined' || !Array.isArray(ChatRoomCharacter)) return;
-        for (const C of ChatRoomCharacter) {
-            if (!C || C.MemberNumber == null || C.MemberNumber === Player?.MemberNumber) continue;
-            const info = C.OnlineSharedSettings?.[ES_KEY]?.state;
-            const was = _remoteAnims.get(C.MemberNumber);
-            if (info && info.mode === 'excreting' && info.startedAt) {
-                // 同一 startedAt 永不重播：房间同步延迟时旧 EXCRETING 状态可能滞留
-                // 很久（2.8s 删 key 的方案会被扫到重播——"动画播了 2 遍"的根因）
-                if (was !== info.startedAt) {
-                    _remoteAnims.set(C.MemberNumber, info.startedAt);
-                    startExcreteAnim(C);
-                }
-            } else if (was !== undefined) {
-                _remoteAnims.delete(C.MemberNumber);
-            }
-        }
-    } catch (e) {}
-}
+// 对方进入 excreting（刚排出）→ 在他臀部→地面播动画，所有装 PEX 的都看得到。
+// 触发点在 drawGelUnder（绘制时判断），不再有每秒扫全房的定时器。
+// 同一 startedAt 永久去重：房间同步延迟时旧 EXCRETING 状态可能滞留很久
+//（早期"2.8 秒删 key"的方案会被重新扫到 → "动画播了 2 遍"的根因）
+const _remoteAnims = new Map();   // memberNumber → startedAt
 
 export function clearRemoteAnims() {
     _remoteAnims.clear();
@@ -265,54 +250,39 @@ export function registerGelMessageHandlers(onGelConsumed) {
                 const drinker = +get('Drinker');
                 const gelId = get('GelId');
                 // 所有客户端：owner 的凝胶状态立即清空（放回/喝掉后脚下凝胶消失）
-                try {
-                    const OC = getCharacterByNumber(owner);
-                    if (OC?.OnlineSharedSettings?.[ES_KEY]) OC.OnlineSharedSettings[ES_KEY].state = null;
-                } catch (e) {}
+                clearRemoteState(owner);
                 if (typeof onGelConsumed === 'function') onGelConsumed({ gelId, owner, drinker });
             } else if (data.Content === 'PEX_GelHeld') {
                 const gelId = get('GelId');
                 const owner = +get('Owner');
                 const holder = +get('Holder');
-                // 所有人客户端：更新 owner 的公告状态 → "捡起凝胶"选项立即消失
-                try {
-                    const OC = getCharacterByNumber(owner);
-                    if (OC?.OnlineSharedSettings?.[ES_KEY]?.state) {
-                        OC.OnlineSharedSettings[ES_KEY].state.gelHolder = holder;
-                    }
-                } catch (e) {}
-                // 主人端：把持有者同步进本地状态机并立即广播——
-                // 否则例行公告会用旧值（无人持有）覆盖 gelHolder → 凝胶"又出现"（唯一性 bug）
+                // 所有人客户端：更新 owner 的状态 → "捡起凝胶"选项立即消失
+                patchRemoteState(getCharacterByNumber(owner), { gelHolder: holder });
+                // 主人端：把持有者同步进本地状态机并重新公告一次（这是一次真正的状态转换）
                 if (owner === Player?.MemberNumber) {
                     try {
                         PEX_STATE.gelHolder = holder;
                         publishState({
-                            mode: 'blank',
-                            remainingSec: PEX_STATE.phaseEndsAt ? Math.max(0, Math.round((PEX_STATE.phaseEndsAt - Date.now()) / 1000)) : 0,
+                            mode: MODE.BLANK,
+                            type: PEX_STATE.gelType,
                             owner: Player?.MemberNumber,
                             gelId,
                             gelHolder: holder,
                             expiresAt: PEX_STATE.phaseEndsAt || 0,
-                        }, true);
+                        });
                     } catch (e) {}
                 }
             } else if (data.Content === 'PEX_StateSync') {
-                // 实时状态同步：对方的状态立刻刷到我本地的房间角色缓存上
-                // （不依赖服务器 OnlineSharedSettings 的房间延迟——那是按钮/凝胶/倒计时/动画
-                //   之前"别人看不到"的根因）
+                // 实时状态同步：对方的状态立刻进本地缓存
+                // （服务器扇出 OnlineSharedSettings 有延迟——那是按钮/凝胶/倒计时/动画
+                //   之前"别人看不到"的根因；缓存带 seq，不会被随后到达的旧 OSS 盖回去）
                 const raw = get('Payload');
                 if (!raw) return;
                 let payload = null;
                 try { payload = JSON.parse(raw); } catch (e) { return; }
                 const sender = Number(data.Sender);
                 if (!sender || sender === Player?.MemberNumber || !payload || typeof payload !== 'object') return;
-                const C = getCharacterByNumber(sender);
-                if (!C) return;
-                try {
-                    if (!C.OnlineSharedSettings) C.OnlineSharedSettings = {};
-                    if (!C.OnlineSharedSettings[ES_KEY]) C.OnlineSharedSettings[ES_KEY] = {};
-                    C.OnlineSharedSettings[ES_KEY].state = payload;
-                } catch (e) {}
+                applyRemoteState(sender, payload);
             } else if (data.Content === 'PEX_SharedSync') {
                 // 实时权限同步：对方改了远程编辑权限 → 资料页按钮立刻按新权限显示
                 const raw = get('Payload');

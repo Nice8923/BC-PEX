@@ -6,19 +6,20 @@
 
 import { CONFIG, ES_KEY } from '../core/config.js';
 import { getModApi } from '../core/config.js';
+import { readRemoteState } from '../gameplay/state.js';
 
-// 读角色的 PEX 公告状态
-function readState(C) {
-    try {
-        return C?.OnlineSharedSettings?.[ES_KEY]?.state || null;
-    } catch (e) { return null; }
-}
+// 读角色的 PEX 状态（本地缓存优先，OSS 兜底）
+const readState = (C) => readRemoteState(C);
+
+// 剩余秒数：只认绝对时间戳 expiresAt，本地推算。
+// 发布端不再重播倒数（旧版每 5 秒一发 remainingSec，纯浪费）
+const remainingOf = (st) => (st?.expiresAt > 0 ? Math.max(0, (st.expiresAt - Date.now()) / 1000) : 0);
 
 // 是否该给这个角色画计时器（可见性读【被观察者】公告的设置，不是观察者自己的）
 function shouldDraw(C) {
     try {
         const st = readState(C);
-        if (!st || !st.remainingSec || st.remainingSec <= 0) return false;
+        if (!st || remainingOf(st) <= 0) return false;
         if (st.mode !== 'waiting' && st.mode !== 'blocked' && st.mode !== 'blank') return false;
         const isMe = C?.MemberNumber != null && Player?.MemberNumber != null && C.MemberNumber === Player.MemberNumber;
         // 优先用对方公告的可见性设置（对方设"仅自己"→ 别人不画他的）；兜底读自己的配置
@@ -53,14 +54,7 @@ function drawOnce(C, charX, charY, zoom, st) {
     const z = zoom || 1;
     const x = charX + 100 * z;          // 头顶中心 x 偏移
     const y = charY + 95 * z;           // 头顶上方
-    // 剩余秒数：本地每秒推算（st.expiresAt 精确时间戳），广播的 remainingSec 只是 5 秒量化兜底
-    let rem;
-    if (st.expiresAt > 0) {
-        rem = Math.max(0, Math.ceil((st.expiresAt - Date.now()) / 1000));
-    } else {
-        rem = Math.max(0, st.remainingSec || 0);
-    }
-    const text = fmt(rem);
+    const text = fmt(remainingOf(st));
     // 临时换小字号（DrawText 直接用 canvas 当前字体；画完恢复 36px 默认）
     let prevFont = null;
     const canvas = (typeof MainCanvas !== 'undefined') ? MainCanvas : null;

@@ -117,10 +117,12 @@ export async function initialize() {
                             pexLog('进房还原状态:', PEX_STATE.mode);
                             publishState({
                                 mode: PEX_STATE.mode,
-                                remainingSec: Math.max(0, Math.round((PEX_STATE.phaseEndsAt - Date.now()) / 1000)),
-                                owner: PEX_STATE.ownerMemberNumber,
+                                type: PEX_STATE.gelType,
+                                expiresAt: PEX_STATE.phaseEndsAt,
+                                owner: PEX_STATE.ownerMemberNumber ?? Player?.MemberNumber,
                                 gelId: PEX_STATE.gelId,
-                            }, true);
+                                gelHolder: PEX_STATE.gelHolder,
+                            });
                         }
                     } catch (e) {}
                 }, 1500);
